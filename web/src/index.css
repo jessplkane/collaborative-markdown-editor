@@ -3,3 +3,36 @@ body {
   margin: 0;
   padding: 2rem;
 }
+
+main {
+  max-width: 48rem;
+  margin: 0 auto;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.entries {
+  list-style: none;
+  padding: 0;
+}
+
+.entries li {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #ddd;
+}
+
+.entries li a {
+  flex: 1;
+}
+
+.entries li time {
+  color: #666;
+  font-size: 0.875rem;
+}
