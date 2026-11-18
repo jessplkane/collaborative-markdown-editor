@@ -36,3 +36,41 @@ main {
   color: #666;
   font-size: 0.875rem;
 }
+
+main.wide {
+  max-width: none;
+}
+
+.status {
+  margin: 0 0 0.5rem;
+  color: #666;
+  font-size: 0.875rem;
+}
+
+.status[data-status='closed'],
+.status[data-status='desync'],
+.status[data-status='notfound'] {
+  color: #b00020;
+}
+
+.panes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  height: calc(100vh - 10rem);
+}
+
+.pane {
+  min-width: 0;
+  overflow: auto;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.pane.editor .cm-editor {
+  height: 100%;
+}
+
+.pane.preview {
+  padding: 0 1rem;
+}

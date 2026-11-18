@@ -27,6 +27,7 @@ func run() error {
 	if p := os.Getenv("DB_PATH"); p != "" {
 		dbPath = p
 	}
+	origins := parseOrigins(os.Getenv("ALLOWED_ORIGINS"))
 
 	store, err := OpenStore(dbPath)
 	if err != nil {
@@ -34,9 +35,13 @@ func run() error {
 	}
 	defer store.Close()
 
+	hub := NewHub(store)
+	hub.originPatterns = origins
+
 	mux := http.NewServeMux()
 	(&API{store: store}).Register(mux)
-	srv := &http.Server{Handler: mux}
+	mux.HandleFunc("GET /ws/entries/{id}", hub.ServeWS)
+	srv := &http.Server{Handler: withCORS(mux, origins)}
 
 	// Bind before logging so "listening" is only printed when it is true.
 	ln, err := net.Listen("tcp", addr)

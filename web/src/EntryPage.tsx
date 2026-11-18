@@ -1,8 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { NotFoundError, getEntry } from './api.ts'
+import { EntryEditor } from './EntryEditor.tsx'
 
 export function EntryPage({ entryId }: { entryId: string }) {
+  // Checked over REST first so an unknown id gets a proper "not found" page
+  // instead of a websocket that opens and immediately closes.
   const entry = useQuery({
     queryKey: ['entry', entryId],
     queryFn: () => getEntry(entryId),
@@ -10,7 +13,7 @@ export function EntryPage({ entryId }: { entryId: string }) {
   })
 
   return (
-    <main>
+    <main className="wide">
       <p>
         <Link to="/">← All entries</Link>
       </p>
@@ -21,12 +24,7 @@ export function EntryPage({ entryId }: { entryId: string }) {
       {entry.isError && !(entry.error instanceof NotFoundError) && (
         <p role="alert">Could not load this entry.</p>
       )}
-      {entry.isSuccess && (
-        <>
-          <h1>{entry.data.title}</h1>
-          <p>The editor arrives in the next slice.</p>
-        </>
-      )}
+      {entry.isSuccess && <EntryEditor entryId={entryId} />}
     </main>
   )
 }

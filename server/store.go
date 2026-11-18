@@ -76,7 +76,7 @@ func (s *Store) CreateEntry(ctx context.Context) (Entry, error) {
 		return Entry{}, err
 	}
 	now := time.Now().UnixMilli()
-	e := Entry{ID: id, Title: "Untitled", UpdatedAt: now}
+	e := Entry{ID: id, Title: untitled, UpdatedAt: now}
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO entries (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`,
 		e.ID, e.Title, now, now)
@@ -116,6 +116,33 @@ func (s *Store) ListEntries(ctx context.Context) ([]Entry, error) {
 
 func (s *Store) DeleteEntry(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM entries WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetContent returns the stored markdown of an entry.
+func (s *Store) GetContent(ctx context.Context, id string) (string, error) {
+	var content string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT content FROM entries WHERE id = ?`, id,
+	).Scan(&content)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return content, err
+}
+
+// SaveContent replaces an entry's content and derived title and bumps its
+// updated time.
+func (s *Store) SaveContent(ctx context.Context, id, content, title string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE entries SET content = ?, title = ?, updated_at = ? WHERE id = ?`,
+		content, title, time.Now().UnixMilli(), id)
 	if err != nil {
 		return err
 	}

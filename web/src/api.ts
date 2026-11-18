@@ -1,3 +1,5 @@
+import { apiBase } from './config.ts'
+
 export interface Entry {
   id: string
   title: string
@@ -12,7 +14,7 @@ export class NotFoundError extends Error {
 }
 
 async function request(path: string, init?: RequestInit): Promise<Response> {
-  const res = await fetch(path, init)
+  const res = await fetch(apiBase + path, init)
   if (res.status === 404) throw new NotFoundError()
   if (!res.ok) throw new Error(`${init?.method ?? 'GET'} ${path}: ${res.status}`)
   return res
