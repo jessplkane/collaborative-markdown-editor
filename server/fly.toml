@@ -12,6 +12,19 @@ primary_region = 'ams'
 
 [env]
   PORT = '8080'
+  # SQLite lives on the mounted volume below; the root filesystem is wiped on
+  # every restart and deploy.
+  DB_PATH = '/data/entries.db'
+  # Hosts allowed to call the API and open websockets from another origin,
+  # e.g. the Netlify site. Required once the frontend is hosted elsewhere.
+  # ALLOWED_ORIGINS = 'site.netlify.app'
+
+# Persistent storage for the database. Rooms live in one process's memory, so
+# run exactly one machine (a volume can only be attached to one machine anyway).
+[mounts]
+  source = 'data'
+  destination = '/data'
+  initial_size = '1gb'
 
 [http_service]
   internal_port = 8080
@@ -22,7 +35,6 @@ primary_region = 'ams'
   processes = ['app']
 
 [[vm]]
-  memory = '1gb'
+  memory = '256mb'
   cpu_kind = 'shared'
   cpus = 1
-  memory_mb = 256

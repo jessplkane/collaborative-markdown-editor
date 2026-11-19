@@ -1,2 +1,6 @@
 fly.toml
 .git
+# Local development databases must not be baked into the image.
+*.db
+*.db-shm
+*.db-wal

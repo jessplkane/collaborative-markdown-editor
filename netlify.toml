@@ -1,0 +1,19 @@
+# The Vite app lives in web/, and the Go server is deployed separately on Fly.io.
+[build]
+  base = "web"
+  command = "npm run build"
+  publish = "dist"   # relative to base, so web/dist
+
+[build.environment]
+  # Vite 8 needs Node 20.19+ or 22.12+.
+  NODE_VERSION = "22"
+  # Public URL of the Go server, inlined into the bundle at build time.
+  # Change it here (or override it in the Netlify UI) if the Fly app changes.
+  VITE_API_URL = "https://collaborative-markdown-editor.fly.dev"
+
+# Client-side routing: unknown paths such as /entries/abc must serve the app.
+# Real files (the built assets) are served as-is; rewrites do not shadow them.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
