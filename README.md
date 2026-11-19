@@ -18,7 +18,7 @@ Not built yet:
 - Automatic reconnect and resume after a dropped connection. Today the editor goes read-only and asks you to reload.
 - Kicking viewers back to the list when an entry is deleted under them.
 - Document size cap and flushing unsaved edits on graceful shutdown. A restart can lose edits from roughly the last second.
-- End-to-end browser tests.
+- Playwright tests for presence, reconnect and delete-while-viewing.
 
 ## How it works
 
@@ -79,7 +79,9 @@ cd server && go test -race ./...     # document logic, rooms, websocket integrat
 cd web && npx tsc -b && npm run lint
 ```
 
-The Go tests cover applying edits (including emoji and invalid ranges), title derivation, version sequencing and stale rejection, saving, slow-client dropping, join/leave races, and real WebSocket clients against an `httptest` server.
+The Go tests cover applying edits (including emoji and invalid ranges), title derivation, version sequencing and stale rejection, saving, slow-client dropping, join/leave races, and real WebSocket clients against an `httptest` server. `TestTwoClientsTypingConcurrentlyConverge` runs two such clients editing at once, each sending as soon as its last batch is confirmed or rejected, and checks that they and the server end with identical text and that no edit is lost or duplicated.
+
+The browser test lives in `web/e2e/` and needs Chromium once (`npx playwright install chromium`). `npm run e2e` starts its own Go server (throwaway database, port 8181) and Vite (port 5273), so it can run while `make dev` is up. It opens two browser contexts on one entry, types into both at the same time, and checks that both editors, the preview and a third, fresh browser show the same text, with each writer's keystrokes complete and in order.
 
 ## Deploying
 
