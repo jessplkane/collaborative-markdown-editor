@@ -75,21 +75,38 @@ func checkChanges(length int, changes []Change) (int, error) {
 	return newLength, nil
 }
 
-// ApplySteps applies steps in order. It validates every step before touching
-// the document, so on error d is unchanged. The returned Doc may share
-// storage with d.
-func (d Doc) ApplySteps(steps []Step) (Doc, error) {
+// CheckSteps validates steps against d without touching it and returns the
+// length d would have after all of them. A caller that wants to refuse an
+// update by its resulting size must decide before applying: applying may
+// write into d's storage.
+func (d Doc) CheckSteps(steps []Step) (int, error) {
 	length := len(d)
 	for _, s := range steps {
 		var err error
 		if length, err = checkChanges(length, s.Changes); err != nil {
-			return d, err
+			return 0, err
 		}
 	}
+	return length, nil
+}
+
+// ApplySteps applies steps in order. It validates every step before touching
+// the document, so on error d is unchanged. The returned Doc may share
+// storage with d, and d itself may be overwritten: use d only through the
+// returned Doc afterwards.
+func (d Doc) ApplySteps(steps []Step) (Doc, error) {
+	if _, err := d.CheckSteps(steps); err != nil {
+		return d, err
+	}
+	return d.applyChecked(steps), nil
+}
+
+// applyChecked applies steps that CheckSteps accepted for d.
+func (d Doc) applyChecked(steps []Step) Doc {
 	for _, s := range steps {
 		d = d.apply(s.Changes)
 	}
-	return d, nil
+	return d
 }
 
 // apply assumes changes are valid for d. It works from the last change to the

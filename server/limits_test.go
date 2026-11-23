@@ -52,6 +52,29 @@ func TestUpdateThatWouldExceedTheCapIsRefusedAndTheDocumentIsUntouched(t *testin
 	}
 }
 
+// Applying an edit can overwrite the document's storage, so a refused update
+// must be refused before anything is applied. Replacing text while growing is
+// what overwrites it; the entry's non-ASCII text leaves spare capacity for
+// that to happen in place.
+func TestRefusedGrowingReplaceLeavesTheDocumentIntact(t *testing.T) {
+	h, store := newTestHub(t)
+	h.maxDocUnits = 12
+	const original = "éééééééééé"
+	id := newEntry(t, store, original)
+	a, room, _ := join(t, h, id)
+	join(t, h, id) // keeps the room alive after a is kicked
+
+	room.update(a.Client, "ca", 0, []Step{{Changes: []Change{{From: 0, To: 1, Insert: "ABCDEFGH"}}}})
+	if k := a.expectKick(t); k.code != closeTooLarge {
+		t.Fatalf("kicked with %+v", k)
+	}
+
+	_, _, snap := join(t, h, id)
+	if snap.Doc != original || snap.Version != 0 {
+		t.Fatalf("got doc %q at version %d", snap.Doc, snap.Version)
+	}
+}
+
 // An entry saved before the cap existed (or under a larger one) still opens.
 // It cannot grow, but it can shrink, and once it is under the cap it is an
 // ordinary entry again.

@@ -525,21 +525,22 @@ func (r *Room) handleUpdate(m updateMsg) {
 	case m.version < r.version:
 		r.send(m.c, marshal(rejectMessage{"reject", r.version}))
 	default:
-		doc, err := r.doc.ApplySteps(m.steps)
+		newLen, err := r.doc.CheckSteps(m.steps)
 		if err != nil {
 			r.drop(m.c, websocket.StatusPolicyViolation, "invalid update")
 			return
 		}
-		if len(doc) > r.hub.maxDocUnits && len(doc) > len(r.doc) {
+		if newLen > r.hub.maxDocUnits && newLen > len(r.doc) {
 			// Growth past the cap is refused; an entry that is already over it
 			// (saved before the cap, or under a larger one) can still shrink.
-			// The batch is not applied, and the client cannot be told to drop
+			// Decided before applying, which writes into r.doc's storage. The
+			// batch is not applied, and the client cannot be told to drop
 			// just that batch, so the connection ends.
 			r.drop(m.c, closeTooLarge, "document too large")
 			return
 		}
 		base := r.version
-		r.doc = doc
+		r.doc = r.doc.applyChecked(m.steps)
 		r.version += len(m.steps)
 		r.history.add(batch{base, m.clientID, m.steps})
 		data := marshal(updatesMessage{"updates", base, m.clientID, m.steps})
