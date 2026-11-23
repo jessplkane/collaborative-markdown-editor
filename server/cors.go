@@ -43,10 +43,14 @@ func withCORS(next http.Handler, patterns []string) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The response depends on Origin whether or not it is allowed, so a
+		// cache must key on it either way: otherwise a response with the
+		// allowed origin's headers could be served to another origin, or one
+		// without them to the allowed origin.
+		w.Header().Add("Vary", "Origin")
 		origin := r.Header.Get("Origin")
 		if origin != "" && originAllowed(origin, patterns) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Add("Vary", "Origin")
 			if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE")
 				w.Header().Set("Access-Control-Allow-Headers", "Content-Type")

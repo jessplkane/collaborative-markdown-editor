@@ -91,6 +91,13 @@ func TestWithCORS(t *testing.T) {
 			t.Fatalf("code %d", rec.Code)
 		}
 	})
+	t.Run("every response varies on Origin", func(t *testing.T) {
+		for _, origin := range []string{"", "https://app.example.com", "https://evil.example.org"} {
+			if got := do("GET", origin).Header().Values("Vary"); !slices.Contains(got, "Origin") {
+				t.Errorf("origin %q: Vary %q", origin, got)
+			}
+		}
+	})
 	t.Run("no patterns means no wrapping", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/", nil)
