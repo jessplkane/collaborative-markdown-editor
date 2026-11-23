@@ -25,6 +25,9 @@ export default defineConfig({
         // what a disconnected client missed (reconnect.spec.ts), large enough
         // that a few keystrokes are replayable.
         RESUME_LOG_BYTES: '2048',
+        // Low enough to hit with one paste (lifecycle.spec.ts), above the
+        // largest paste the other specs make.
+        MAX_DOC_UNITS: '20000',
       },
       url: `http://localhost:${goPort}/api/entries`,
       reuseExistingServer: false,

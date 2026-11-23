@@ -15,9 +15,16 @@ import (
 )
 
 const (
-	// maxMessageBytes caps one incoming frame. The library default of 32 KiB
-	// would drop the connection on a modest paste.
-	maxMessageBytes = 2 << 20
+	// defaultMaxDocUnits caps a document at about 1 MB of text, counted in
+	// UTF-16 code units because that is how the server holds and addresses it.
+	defaultMaxDocUnits = 1_000_000
+
+	// maxMessageBytes caps one incoming frame, sized so that an update the
+	// size cap allows is never refused by the read limit instead: JSON can
+	// spend up to six bytes on one code unit (a control character is
+	// \u00XX), plus room for the rest of the message. The library default of
+	// 32 KiB would drop the connection on a modest paste.
+	maxMessageBytes = 6*defaultMaxDocUnits + 64<<10
 
 	// clientSendBuffer is how many outgoing messages may queue for one
 	// connection before it is dropped as too slow.
@@ -29,6 +36,13 @@ const (
 	// closeReplaced is sent to a connection whose client (same clientID)
 	// has opened a newer one.
 	closeReplaced = websocket.StatusCode(4009)
+
+	// closeDeleted is sent to every client of an entry that was deleted.
+	closeDeleted = websocket.StatusCode(4010)
+
+	// closeTooLarge is sent to a client whose update would have made the
+	// document larger than the cap. The update was not applied.
+	closeTooLarge = websocket.StatusCode(4013)
 )
 
 const (
@@ -37,6 +51,8 @@ const (
 	maxIDBytes   = 64
 	maxNameRunes = 40
 )
+
+var errShuttingDown = errors.New("server is shutting down")
 
 var pongMessage = marshal(struct {
 	Type string `json:"type"`
@@ -92,9 +108,12 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 
 	room, err := h.Join(ctx, r.PathValue("id"), c)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		switch {
+		case errors.Is(err, ErrNotFound):
 			conn.Close(closeNotFound, "entry not found")
-		} else {
+		case errors.Is(err, errShuttingDown):
+			conn.Close(websocket.StatusGoingAway, "server shutting down")
+		default:
 			log.Printf("ws join: %v", err)
 			conn.Close(websocket.StatusInternalError, "internal error")
 		}

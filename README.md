@@ -13,12 +13,8 @@ Built so far:
 - Live editing over a WebSocket. Several browsers can edit one entry and converge on the same text. Edits are saved to SQLite, and the entry title is derived from the first line or heading.
 - Names, a viewer list and remote cursors. Each viewer is asked for a name once; everyone in the entry sees who else is there and where their cursor is.
 - Reconnect and resume. A dropped connection comes back with backoff and picks up where it left off; edits typed meanwhile are kept.
-
-Not built yet:
-
-- Kicking viewers back to the list when an entry is deleted under them.
-- Document size cap and flushing unsaved edits on graceful shutdown. A restart can lose edits from roughly the last second.
-- A Playwright test for delete-while-viewing.
+- Deleting an entry sends everyone viewing it back to the list with a notice.
+- A document size cap, and unsaved edits are flushed on graceful shutdown, so a restart no longer loses the last second of typing.
 
 ## How it works
 
@@ -34,7 +30,7 @@ browser (React, CodeMirror)  <-- REST /api/* -->  Go server  <-->  SQLite
 
 **Positions are UTF-16 code units**, matching CodeMirror, so an emoji counts as two. The server keeps the document as `[]uint16` for this reason and converts to a string only to save or send a snapshot.
 
-**Persistence.** Edits are saved to SQLite about one second after the last change, and at most five seconds after the first unsaved one, so continuous typing still gets saved. They are also saved when the last viewer leaves.
+**Persistence.** Edits are saved to SQLite about one second after the last change, and at most five seconds after the first unsaved one, so continuous typing still gets saved. They are also saved when the last viewer leaves, and on graceful shutdown (see below).
 
 ### Wire protocol
 
@@ -49,7 +45,7 @@ JSON text frames. Also documented in `server/room.go` and `web/src/protocol.ts`.
 | server → client | `{"type":"reject","version":N}` | The batch was stale. N is the current version. |
 | client → server | `{"type":"ping"}` | Liveness probe, answered with `{"type":"pong"}`. See Reconnect and resume. |
 
-A malformed message or an out-of-range update closes the connection with code 1007 or 1008. Close code 4004 means the entry does not exist, 4009 that the same client opened a newer connection, and 1013 that the client was too slow and may try again.
+A malformed message or an out-of-range update closes the connection with code 1007 or 1008. Other close codes: 4004 the entry does not exist, 4009 the same client opened a newer connection, 4010 the entry was deleted, 4013 the update would have made the document too large, 1013 the client was too slow and may try again, 1001 the server is shutting down.
 
 ### Presence
 
@@ -82,7 +78,19 @@ When the socket closes for any reason but the terminal ones below, the editor sh
 - **Linger.** An empty room stays for 30 seconds, so that the only person in an entry can drop and resume instead of always falling back to a snapshot.
 - **One viewer per client.** When a client says hello, the room closes any other connection with the same `clientID` (code 4009); the server may not have noticed yet that the old one is dead.
 
-**Which closes reconnect.** Everything except 1007, 1008, 1009 (the server refused what the client sent, and would again), 4004 (no such entry) and 4009 (replaced). Those freeze the editor read-only with a message. The list is `isTerminalClose` in `web/src/protocol.ts`.
+**Which closes reconnect.** Everything except 1007, 1008, 1009 (the server refused what the client sent, and would again), 4004 (no such entry), 4009 (replaced), 4010 (deleted) and 4013 (document too large). Those freeze the editor read-only with a message, or, for 4010, leave the page. The list is `isTerminalClose` in `web/src/protocol.ts`.
+
+### Deleting an entry
+
+`DELETE /api/entries/{id}` removes the row and then tells the hub (`Hub.Delete`), which tells the entry's room if it has one. The room closes every client with code 4010, discards unsaved edits instead of saving them, and exits. There is no gap in which a room could be created for the deleted entry: creating one reads the store while holding the hub's lock, so it either already exists when `Delete` looks, or finds the row gone and the client gets 4004. A viewer receiving 4010 is navigated to the list, which shows a dismissible notice (`/?notice=deleted`).
+
+### Size cap
+
+A document may not grow past 1,000,000 UTF-16 code units (about 1 MB of text; units rather than bytes because that is what the server stores and addresses). An update that would make it larger is refused: the room does not apply it, closes that client with 4013, and nobody else sees anything. The batch cannot be refused in-band, because a client treats a refusal as "stale" and retries; and the client's unconfirmed edits cannot be partly dropped, so the editor goes read-only with a message and a reload shows the saved text. An entry that is already over the cap (saved before the cap, or under a larger one) still opens and can shrink, but cannot grow. The websocket read limit is derived from the cap, allowing for JSON spending up to six bytes on one code unit, so the limit never rejects an update the cap allows.
+
+### Shutdown
+
+On SIGTERM the server stops accepting connections and then calls `Hub.Shutdown`, which asks every room to save and close its clients with 1001 ("going away", which the client treats as "reconnect"), and waits for them, all within five seconds (Fly's kill timeout). Only after that does the store close, so no save hits a closed database. `http.Server.Shutdown` does not wait for websocket connections, which is why the rooms are told separately.
 
 ## Running it
 
@@ -104,6 +112,7 @@ To run the pieces separately: `make server` and `make web`.
 | `PORT` | server | `8080` | Port to listen on. |
 | `DB_PATH` | server | `data.db` | SQLite file. Relative to the server's working directory, so set an absolute path in production. |
 | `ALLOWED_ORIGINS` | server | none | Comma-separated host patterns (`app.example.com`, `*.example.com`, `localhost:5173`) allowed to call the API and open WebSockets from another origin. Unset means same-origin only. |
+| `MAX_DOC_UNITS` | server | `1000000` | Document size cap in UTF-16 code units. Can only be lowered. The end-to-end tests set it small. |
 | `RESUME_LOG_BYTES` | server | `4194304` | Estimated size of the batches a room keeps to replay to reconnecting clients. A client away for longer gets a snapshot. The end-to-end tests set it small. |
 | `VITE_API_URL` | web, build time | none | Base URL of the Go server, such as `https://my-app.fly.dev`. Unset means same origin. See `web/.env.example`. |
 | `SERVER_URL` | web, dev only | `http://localhost:8080` | Where the Vite dev proxy forwards `/api` and `/ws`. Read from the shell environment. |
@@ -117,10 +126,13 @@ cd web && npx tsc -b && npm run lint && npm test
 
 The Go tests cover applying edits (including emoji and invalid ranges), title derivation, version sequencing and stale rejection, saving, slow-client dropping, join/leave races, presence (viewer list order, leaving, relayed cursors, malformed messages, a connection that stops answering pings), resume (replay order and authorship, the lost-acknowledgement case, each reason for falling back to a snapshot, the room lingering and being revived, a reconnecting client listed once), and real WebSocket clients against an `httptest` server. `TestTwoClientsTypingConcurrentlyConverge` runs two such clients editing at once, each sending as soon as its last batch is confirmed or rejected, and checks that they and the server end with identical text and that no edit is lost or duplicated.
 
+The lifecycle tests cover deleting an entry in a room (every client closed with 4010, nothing saved afterwards, the room gone, a later join finding no entry, an empty lingering room ended), the delete endpoint end to end over a real websocket, the size cap (landing exactly on it counts UTF-16 units and is accepted, one unit over is refused and the document is untouched, an entry already over the cap opens and can shrink, and an update at the cap in the worst-case JSON encoding passes the read limit), and shutdown (edits typed since the last save, in an occupied and in an empty room, survive a restart against a file-backed database; joins during shutdown are told to come back).
+
 The browser tests live in `web/e2e/` and need Chromium once (`npx playwright install chromium`). `npm run e2e` starts its own Go server (throwaway database, port 8181) and Vite (port 5273), so it can run while `make dev` is up.
 
 - `convergence.spec.ts` opens two browser contexts on one entry, types into both at the same time, and checks that both editors, the preview and a third, fresh browser show the same text, with each writer's keystrokes complete and in order.
 - `presence.spec.ts` covers the name prompt, the viewer list (including leaving when a page closes), and remote cursors: where they are drawn, how they follow edits from either side, and that a late joiner sees existing cursors.
+- `lifecycle.spec.ts` deletes an entry (through the REST API) while two pages have it open and checks both land on the list with a notice, and that a paste past the size cap is refused, leaves the other viewer and the saved text untouched, and is not retried.
 - `reconnect.spec.ts` severs a page's socket with `page.routeWebSocket` while it and another page keep typing, and checks that nothing is lost and both converge; that a lone client resumes too; and that when the history cannot cover the gap the editor reloads and reports the dropped edits.
 
 `npm test` runs the Vitest unit tests: `web/src/stepLog.ts` (the log that carries a cursor from the version its owner reported to the version you have), the reconnect backoff, and which close codes are worth retrying.

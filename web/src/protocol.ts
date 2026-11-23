@@ -68,13 +68,22 @@ export const CLOSE_NOT_FOUND = 4004
 /** The server closed this connection because the same client opened another. */
 export const CLOSE_REPLACED = 4009
 
+/** The entry was deleted while this client was viewing it. */
+export const CLOSE_DELETED = 4010
+
+/**
+ * The client's last update would have made the document larger than the
+ * server allows. It was not applied.
+ */
+export const CLOSE_TOO_LARGE = 4013
+
 /**
  * Close codes after which reconnecting cannot help: the entry is gone, the
  * server is no longer talking to this client, or it refused what the client
  * sent (1007 malformed message, 1008 policy violation, 1009 message too
- * big), which would be refused again. Every other close, including the
- * server's "try again later" (1013) and "going away" (1001) and an abnormal
- * drop (1006), is worth retrying.
+ * big, 4013 document too large), which would be refused again. Every other
+ * close, including the server's "try again later" (1013) and "going away"
+ * (1001) and an abnormal drop (1006), is worth retrying.
  */
 const TERMINAL_CLOSE_CODES = new Set([
   1007,
@@ -82,6 +91,8 @@ const TERMINAL_CLOSE_CODES = new Set([
   1009,
   CLOSE_NOT_FOUND,
   CLOSE_REPLACED,
+  CLOSE_DELETED,
+  CLOSE_TOO_LARGE,
 ])
 
 export function isTerminalClose(code: number): boolean {

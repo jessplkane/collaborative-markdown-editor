@@ -12,6 +12,9 @@ const rootRoute = createRootRoute({ component: () => <Outlet /> })
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
+  // Why the user was sent here, if they were: shown on the list page.
+  validateSearch: (search: Record<string, unknown>): { notice?: 'deleted' } =>
+    search.notice === 'deleted' ? { notice: 'deleted' } : {},
   component: EntriesPage,
 })
 

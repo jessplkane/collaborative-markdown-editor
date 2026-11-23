@@ -12,7 +12,9 @@ import { wsUrl } from './config.ts'
 import { colorFor, getUserID } from './identity.ts'
 import { type Presence, createPresence } from './presence.ts'
 import {
+  CLOSE_DELETED,
   CLOSE_NOT_FOUND,
+  CLOSE_TOO_LARGE,
   type ClientMessage,
   type ServerMessage,
   type Viewer,
@@ -26,6 +28,8 @@ type Status =
   | 'closed'
   | 'desync'
   | 'notfound'
+  | 'deleted'
+  | 'toolarge'
 
 const statusText: Record<Status, string> = {
   connecting: 'Connecting…',
@@ -34,6 +38,9 @@ const statusText: Record<Status, string> = {
   closed: 'Disconnected. Reload the page to reconnect.',
   desync: 'Out of sync with the server. Reload the page.',
   notfound: 'This entry no longer exists.',
+  deleted: 'This entry was deleted.',
+  toolarge:
+    'This entry has reached its size limit and your last change was not saved. Reload the page to see the saved text.',
 }
 
 const droppedEditsNotice =
@@ -44,10 +51,13 @@ const droppedEditsNotice =
 export function EntryEditor({
   entryId,
   name,
+  onDeleted,
 }: {
   entryId: string
   /** The name other viewers see for this user. */
   name: string
+  /** The entry was deleted while it was open. */
+  onDeleted: () => void
 }) {
   const host = useRef<HTMLDivElement>(null)
   const [status, setStatus] = useState<Status>('connecting')
@@ -57,6 +67,11 @@ export function EntryEditor({
   const [selfID, setSelfID] = useState('')
   // Rendering markdown is the expensive part of a keystroke; let typing win.
   const preview = useDeferredValue(text)
+  // Read from inside the connection's handlers, which outlive a render.
+  const onDeletedRef = useRef(onDeleted)
+  useEffect(() => {
+    onDeletedRef.current = onDeleted
+  })
 
   useEffect(() => {
     const mount = host.current
@@ -203,8 +218,17 @@ export function EntryEditor({
 
     function onClose(event: CloseEvent) {
       if (disposed || ended) return
+      if (event.code === CLOSE_DELETED) {
+        freeze('deleted')
+        onDeletedRef.current()
+        return
+      }
       if (isTerminalClose(event.code)) {
-        freeze(event.code === CLOSE_NOT_FOUND ? 'notfound' : 'closed')
+        const terminal: Record<number, Status> = {
+          [CLOSE_NOT_FOUND]: 'notfound',
+          [CLOSE_TOO_LARGE]: 'toolarge',
+        }
+        freeze(terminal[event.code] ?? 'closed')
         return
       }
       connectionLost()

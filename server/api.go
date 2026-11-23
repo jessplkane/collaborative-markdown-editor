@@ -9,6 +9,8 @@ import (
 
 type API struct {
 	store *Store
+	// hub is told when an entry is deleted, so viewers are sent away.
+	hub *Hub
 }
 
 func (a *API) Register(mux *http.ServeMux) {
@@ -46,10 +48,12 @@ func (a *API) getEntry(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) deleteEntry(w http.ResponseWriter, r *http.Request) {
-	if err := a.store.DeleteEntry(r.Context(), r.PathValue("id")); err != nil {
+	id := r.PathValue("id")
+	if err := a.store.DeleteEntry(r.Context(), id); err != nil {
 		storeError(w, err)
 		return
 	}
+	a.hub.Delete(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 

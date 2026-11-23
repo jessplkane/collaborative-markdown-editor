@@ -46,9 +46,18 @@ func run() error {
 		}
 		hub.historyLimit = n
 	}
+	if v := os.Getenv("MAX_DOC_UNITS"); v != "" {
+		n, err := strconv.Atoi(v)
+		// The websocket read limit is sized for the default, so the cap can
+		// only be lowered.
+		if err != nil || n < 1 || n > defaultMaxDocUnits {
+			return fmt.Errorf("MAX_DOC_UNITS must be an integer from 1 to %d, got %q", defaultMaxDocUnits, v)
+		}
+		hub.maxDocUnits = n
+	}
 
 	mux := http.NewServeMux()
-	(&API{store: store}).Register(mux)
+	(&API{store: store, hub: hub}).Register(mux)
 	mux.HandleFunc("GET /ws/entries/{id}", hub.ServeWS)
 	srv := &http.Server{Handler: withCORS(mux, origins)}
 
@@ -71,10 +80,18 @@ func run() error {
 	case <-ctx.Done():
 	}
 
+	// Fly stops a machine about five seconds after SIGTERM.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+	httpErr := srv.Shutdown(shutdownCtx)
+	// Shutdown does not wait for hijacked (websocket) connections, so the
+	// rooms are told separately. They must finish saving before the deferred
+	// store.Close runs.
+	if err := hub.Shutdown(shutdownCtx); err != nil {
+		log.Printf("shutdown: rooms did not finish saving: %v", err)
+	}
+	if httpErr != nil && !errors.Is(httpErr, http.ErrServerClosed) {
+		return httpErr
 	}
 	return nil
 }

@@ -64,6 +64,20 @@ import (
 //	    receiver has always seen version N by the time it reads this.
 //	{"type":"pong"}
 //	    The answer to "ping".
+//
+// Connections end with these close codes. A client reconnects after any of
+// them except 1007, 1008, 1009 and the application codes below.
+//
+//	1001  the server is shutting down; come back
+//	1007, 1008  the client sent something malformed or invalid
+//	1009  a message over the read limit
+//	1013  the client was too slow and was dropped; may try again
+//	4004  closeNotFound: the entry does not exist
+//	4009  closeReplaced: the same clientID opened a newer connection
+//	4010  closeDeleted: the entry was deleted; nothing more was saved
+//	4013  closeTooLarge: an update would have made the document larger than
+//	      the cap (Hub.maxDocUnits, UTF-16 units); it was not applied. An
+//	      entry already over the cap still opens and may shrink.
 
 type clientMessage struct {
 	Type     string `json:"type"`
@@ -167,6 +181,13 @@ type updateMsg struct {
 	steps    []Step
 }
 
+// deleteMsg says the entry no longer exists; the room closes and discards
+// whatever it had not saved.
+type deleteMsg struct{}
+
+// shutdownMsg asks the room to save and close every client.
+type shutdownMsg struct{}
+
 // Hub owns the live rooms, at most one per entry.
 type Hub struct {
 	store *Store
@@ -192,8 +213,13 @@ type Hub struct {
 	// replay; see history.
 	historyLimit int
 
-	mu    sync.Mutex
-	rooms map[string]*Room
+	// maxDocUnits caps a document, in UTF-16 code units. An update that would
+	// make a document larger than this is refused; see handleUpdate.
+	maxDocUnits int
+
+	mu      sync.Mutex
+	rooms   map[string]*Room
+	closing bool // set by Shutdown: no new rooms
 }
 
 func NewHub(store *Store) *Hub {
@@ -206,6 +232,7 @@ func NewHub(store *Store) *Hub {
 		pingTimeout:  10 * time.Second,
 		linger:       30 * time.Second,
 		historyLimit: 4 << 20,
+		maxDocUnits:  defaultMaxDocUnits,
 	}
 }
 
@@ -228,6 +255,9 @@ func (h *Hub) Join(ctx context.Context, id string, c *Client) (*Room, error) {
 func (h *Hub) room(ctx context.Context, id string) (*Room, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closing {
+		return nil, errShuttingDown
+	}
 	if r, ok := h.rooms[id]; ok {
 		return r, nil
 	}
@@ -256,6 +286,52 @@ func (h *Hub) remove(r *Room) {
 	if h.rooms[r.id] == r {
 		delete(h.rooms, r.id)
 	}
+}
+
+// Delete tells the entry's room, if there is one, that the entry is gone:
+// its clients are closed with closeDeleted and nothing more is saved. Call it
+// after the entry has been removed from the store. A room cannot be created
+// for the entry in between: creating one reads the store while holding the
+// hub's lock, so it either exists by now or finds the entry missing.
+func (h *Hub) Delete(id string) {
+	h.mu.Lock()
+	r := h.rooms[id]
+	h.mu.Unlock()
+	if r != nil {
+		r.post(deleteMsg{})
+	}
+}
+
+// Shutdown saves every room and closes its clients with StatusGoingAway,
+// which a client treats as "come back". New joins are refused from the start.
+// It returns early with ctx's error if the rooms are not done in time; rooms
+// still saving keep going, so close the store only after it has returned.
+func (h *Hub) Shutdown(ctx context.Context) error {
+	h.mu.Lock()
+	h.closing = true
+	rooms := make([]*Room, 0, len(h.rooms))
+	for _, r := range h.rooms {
+		rooms = append(rooms, r)
+	}
+	h.mu.Unlock()
+
+	// Ask all first so the saves overlap, then wait.
+	for _, r := range rooms {
+		select {
+		case r.reqs <- shutdownMsg{}:
+		case <-r.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	for _, r := range rooms {
+		select {
+		case <-r.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 func newEpoch() string {
@@ -335,6 +411,15 @@ func (r *Room) cursor(c *Client, version, pos int) {
 	}
 }
 
+// post hands the room a message that is not tied to a client, unless the
+// room has already exited.
+func (r *Room) post(msg any) {
+	select {
+	case r.reqs <- msg:
+	case <-r.done:
+	}
+}
+
 func (r *Room) run() {
 	r.timer = time.NewTimer(time.Hour)
 	r.timer.Stop()
@@ -360,6 +445,20 @@ func (r *Room) run() {
 				r.handleHello(m)
 			case cursorMsg:
 				r.handleCursor(m)
+			case deleteMsg:
+				// Nothing to save: the row is gone.
+				r.dirty = false
+				for c := range r.clients {
+					r.drop(c, closeDeleted, "entry deleted")
+				}
+				r.finish()
+				return
+			case shutdownMsg:
+				for c := range r.clients {
+					r.drop(c, websocket.StatusGoingAway, "server shutting down")
+				}
+				r.finish()
+				return
 			}
 		case <-r.flushC:
 			r.flush()
@@ -429,6 +528,14 @@ func (r *Room) handleUpdate(m updateMsg) {
 		doc, err := r.doc.ApplySteps(m.steps)
 		if err != nil {
 			r.drop(m.c, websocket.StatusPolicyViolation, "invalid update")
+			return
+		}
+		if len(doc) > r.hub.maxDocUnits && len(doc) > len(r.doc) {
+			// Growth past the cap is refused; an entry that is already over it
+			// (saved before the cap, or under a larger one) can still shrink.
+			// The batch is not applied, and the client cannot be told to drop
+			// just that batch, so the connection ends.
+			r.drop(m.c, closeTooLarge, "document too large")
 			return
 		}
 		base := r.version

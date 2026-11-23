@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { createEntry, deleteEntry, listEntries } from './api.ts'
 
 const entriesKey = ['entries'] as const
@@ -7,6 +7,7 @@ const entriesKey = ['entries'] as const
 export function EntriesPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const { notice } = useSearch({ from: '/' })
 
   const entries = useQuery({ queryKey: entriesKey, queryFn: listEntries })
 
@@ -33,6 +34,18 @@ export function EntriesPage() {
         </button>
       </header>
 
+      {notice === 'deleted' && (
+        <p role="status" className="notice">
+          <span>The entry you were viewing was deleted.</span>
+          <button
+            onClick={() =>
+              void navigate({ to: '/', search: {}, replace: true })
+            }
+          >
+            Dismiss
+          </button>
+        </p>
+      )}
       {create.isError && <p role="alert">Could not create entry.</p>}
       {remove.isError && <p role="alert">Could not delete entry.</p>}
 

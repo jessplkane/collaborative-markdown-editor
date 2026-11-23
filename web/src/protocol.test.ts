@@ -12,7 +12,8 @@ describe('isTerminalClose', () => {
 
   it.each([
     ['unknown entry', 4004],
-    ['replaced by a newer connection', 4009],
+    ['deleted entry', 4010],
+    ['document too large', 4013],
     ['invalid payload', 1007],
     ['policy violation', 1008],
     ['message too big', 1009],
