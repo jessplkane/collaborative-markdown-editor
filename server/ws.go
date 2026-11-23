@@ -62,7 +62,7 @@ var pongMessage = marshal(struct {
 func (m clientMessage) valid() bool {
 	switch m.Type {
 	case "update":
-		return m.ClientID != "" && len(m.Updates) > 0
+		return m.ClientID != "" && len(m.ClientID) <= maxIDBytes && len(m.Updates) > 0
 	case "hello":
 		return m.ClientID != "" && len(m.ClientID) <= maxIDBytes &&
 			m.UserID != "" && len(m.UserID) <= maxIDBytes &&

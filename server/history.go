@@ -2,9 +2,13 @@ package main
 
 import "sort"
 
-// changeOverhead is what a change costs in the history's size estimate on top
-// of its inserted text, so that a long run of tiny edits still adds up.
-const changeOverhead = 24
+// Sizes in the history's estimate, on top of inserted text, so that a long
+// run of tiny edits (or of empty steps) still adds up.
+const (
+	changeOverhead = 24
+	stepOverhead   = 16
+	batchOverhead  = 64
+)
 
 // batch is one accepted client update, kept whole so it can be replayed to a
 // reconnecting client exactly as it was broadcast: the client recognises its
@@ -16,8 +20,9 @@ type batch struct {
 }
 
 func (b batch) size() int {
-	n := 0
+	n := batchOverhead + len(b.clientID)
 	for _, s := range b.steps {
+		n += stepOverhead
 		for _, c := range s.Changes {
 			n += len(c.Insert) + changeOverhead
 		}

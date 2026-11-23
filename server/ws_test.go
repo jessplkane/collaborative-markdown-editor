@@ -154,6 +154,8 @@ func TestWebSocketMalformedMessageClosesConnection(t *testing.T) {
 		"wrong type":    `{"type":"hello"}`,
 		"no client id":  `{"type":"update","version":0,"updates":[{"changes":[]}]}`,
 		"empty updates": `{"type":"update","clientID":"c","version":0,"updates":[]}`,
+		"huge client id": `{"type":"update","clientID":"` + strings.Repeat("x", maxIDBytes+1) +
+			`","version":0,"updates":[{"changes":[]}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			conn := mustDial(t, srv, newEntry(t, store, ""))
