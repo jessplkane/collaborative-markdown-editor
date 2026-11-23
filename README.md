@@ -11,10 +11,10 @@ Built so far:
 - Entries list, with create and delete, backed by SQLite.
 - A single entry view: CodeMirror editor beside a rendered markdown preview.
 - Live editing over a WebSocket. Several browsers can edit one entry and converge on the same text. Edits are saved to SQLite, and the entry title is derived from the first line or heading.
+- Names, a viewer list and remote cursors. Each viewer is asked for a name once; everyone in the entry sees who else is there and where their cursor is.
 
 Not built yet:
 
-- Names, colours and remote cursors (who is viewing the entry).
 - Automatic reconnect and resume after a dropped connection. Today the editor goes read-only and asks you to reload.
 - Kicking viewers back to the list when an entry is deleted under them.
 - Document size cap and flushing unsaved edits on graceful shutdown. A restart can lose edits from roughly the last second.
@@ -49,6 +49,23 @@ JSON text frames. Also documented in `server/room.go` and `web/src/protocol.ts`.
 
 A malformed or out-of-range update closes the connection (close code 1007 or 1008). Close code 4004 means the entry does not exist.
 
+### Presence
+
+Presence is ephemeral and per connection; the server keeps no cursor state.
+
+| Direction | Message | Meaning |
+|---|---|---|
+| client → server | `{"type":"hello","clientID":"…","userID":"…","name":"Ada"}` | Who this connection is. Sent right after the snapshot. The connection is listed as a viewer from then on. |
+| client → server | `{"type":"cursor","version":N,"pos":P}` | The cursor is at position P of document version N. Throttled to one message per 75 ms. |
+| server → client | `{"type":"viewers","viewers":[{"clientID":"…","userID":"…","name":"…"}]}` | Everyone who has said hello, in join order, including the receiver. Sent whenever that changes. |
+| server → client | `{"type":"cursor","clientID":"…","version":N,"pos":P}` | Another viewer's cursor, relayed to everyone but its owner. |
+
+**Identity** lives in `localStorage`: a random user id and the name typed at the prompt. The colour is derived from the user id by every browser, so it is never sent. Two tabs of one browser are two viewers.
+
+**Cursors are mapped in the browser.** A cursor is reported against the version its owner had synced, with the owner's unconfirmed edits subtracted, so it means the same thing to everyone. The server relays it after every update it had already broadcast, so a receiver has always seen that version. The receiver carries the position forward through the steps since then (`web/src/stepLog.ts`) and through its own unconfirmed edits, then stores it in an editor state field that moves it with every later change. Text a viewer types at their own cursor pushes it along; anyone else's text at the same spot does not. A cursor is only re-sent when its owner moves or edits, and when someone new joins.
+
+**Dead connections.** The server pings every connection every 20 seconds and closes one that does not answer within 10, which removes it from the viewer list. Browsers answer pings on their own.
+
 ## Running it
 
 Requirements: Go 1.27 or newer, and Node 22.12+ (or 20.19+).
@@ -76,12 +93,17 @@ To run the pieces separately: `make server` and `make web`.
 
 ```sh
 cd server && go test -race ./...     # document logic, rooms, websocket integration, CORS
-cd web && npx tsc -b && npm run lint
+cd web && npx tsc -b && npm run lint && npm test
 ```
 
-The Go tests cover applying edits (including emoji and invalid ranges), title derivation, version sequencing and stale rejection, saving, slow-client dropping, join/leave races, and real WebSocket clients against an `httptest` server. `TestTwoClientsTypingConcurrentlyConverge` runs two such clients editing at once, each sending as soon as its last batch is confirmed or rejected, and checks that they and the server end with identical text and that no edit is lost or duplicated.
+The Go tests cover applying edits (including emoji and invalid ranges), title derivation, version sequencing and stale rejection, saving, slow-client dropping, join/leave races, presence (viewer list order, leaving, relayed cursors, malformed messages, a connection that stops answering pings), and real WebSocket clients against an `httptest` server. `TestTwoClientsTypingConcurrentlyConverge` runs two such clients editing at once, each sending as soon as its last batch is confirmed or rejected, and checks that they and the server end with identical text and that no edit is lost or duplicated.
 
-The browser test lives in `web/e2e/` and needs Chromium once (`npx playwright install chromium`). `npm run e2e` starts its own Go server (throwaway database, port 8181) and Vite (port 5273), so it can run while `make dev` is up. It opens two browser contexts on one entry, types into both at the same time, and checks that both editors, the preview and a third, fresh browser show the same text, with each writer's keystrokes complete and in order.
+The browser tests live in `web/e2e/` and need Chromium once (`npx playwright install chromium`). `npm run e2e` starts its own Go server (throwaway database, port 8181) and Vite (port 5273), so it can run while `make dev` is up.
+
+- `convergence.spec.ts` opens two browser contexts on one entry, types into both at the same time, and checks that both editors, the preview and a third, fresh browser show the same text, with each writer's keystrokes complete and in order.
+- `presence.spec.ts` covers the name prompt, the viewer list (including leaving when a page closes), and remote cursors: where they are drawn, how they follow edits from either side, and that a late joiner sees existing cursors.
+
+`npm test` runs the Vitest unit tests for `web/src/stepLog.ts`, the log that carries a cursor from the version its owner reported to the version you have.
 
 ## Deploying
 

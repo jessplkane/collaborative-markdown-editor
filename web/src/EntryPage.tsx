@@ -1,7 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
+import { useState } from 'react'
 import { NotFoundError, getEntry } from './api.ts'
 import { EntryEditor } from './EntryEditor.tsx'
+import { getName, setName } from './identity.ts'
+import { NamePrompt } from './NamePrompt.tsx'
 
 export function EntryPage({ entryId }: { entryId: string }) {
   // Checked over REST first so an unknown id gets a proper "not found" page
@@ -11,6 +14,7 @@ export function EntryPage({ entryId }: { entryId: string }) {
     queryFn: () => getEntry(entryId),
     retry: (count, err) => !(err instanceof NotFoundError) && count < 3,
   })
+  const [name, setChosenName] = useState(getName)
 
   return (
     <main className="wide">
@@ -24,7 +28,17 @@ export function EntryPage({ entryId }: { entryId: string }) {
       {entry.isError && !(entry.error instanceof NotFoundError) && (
         <p role="alert">Could not load this entry.</p>
       )}
-      {entry.isSuccess && <EntryEditor entryId={entryId} />}
+      {entry.isSuccess &&
+        (name ? (
+          <EntryEditor entryId={entryId} name={name} />
+        ) : (
+          <NamePrompt
+            onSubmit={(chosen) => {
+              setName(chosen)
+              setChosenName(chosen)
+            }}
+          />
+        ))}
     </main>
   )
 }

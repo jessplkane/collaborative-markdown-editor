@@ -10,11 +10,13 @@ import (
 )
 
 type serverMsg struct {
-	Type     string `json:"type"`
-	Doc      string `json:"doc"`
-	Version  int    `json:"version"`
-	ClientID string `json:"clientID"`
-	Updates  []Step `json:"updates"`
+	Type     string   `json:"type"`
+	Doc      string   `json:"doc"`
+	Version  int      `json:"version"`
+	ClientID string   `json:"clientID"`
+	Updates  []Step   `json:"updates"`
+	Viewers  []viewer `json:"viewers"`
+	Pos      int      `json:"pos"`
 }
 
 type testClient struct {

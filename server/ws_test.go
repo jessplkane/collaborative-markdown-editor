@@ -14,8 +14,15 @@ import (
 
 func newWSServer(t *testing.T, patterns ...string) (*httptest.Server, *Store) {
 	t.Helper()
+	return newWSServerWith(t, func(h *Hub) { h.originPatterns = patterns })
+}
+
+// newWSServerWith is newWSServer with a hook to adjust the hub before it
+// serves anything.
+func newWSServerWith(t *testing.T, configure func(*Hub)) (*httptest.Server, *Store) {
+	t.Helper()
 	h, store := newTestHub(t)
-	h.originPatterns = patterns
+	configure(h)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ws/entries/{id}", h.ServeWS)
 	srv := httptest.NewServer(mux)
@@ -24,6 +31,19 @@ func newWSServer(t *testing.T, patterns ...string) (*httptest.Server, *Store) {
 	t.Cleanup(func() { waitForRoomsClosed(t, h) })
 	t.Cleanup(srv.Close)
 	return srv, store
+}
+
+func sendJSON(t *testing.T, conn *websocket.Conn, v any) {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func dial(t *testing.T, srv *httptest.Server, id string, opts *websocket.DialOptions) (*websocket.Conn, *http.Response, error) {

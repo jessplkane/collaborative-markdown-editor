@@ -57,7 +57,7 @@ main.wide {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 1rem;
-  height: calc(100vh - 10rem);
+  height: calc(100vh - 12rem);
 }
 
 .pane {
@@ -73,4 +73,57 @@ main.wide {
 
 .pane.preview {
   padding: 0 1rem;
+}
+
+.viewers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  list-style: none;
+  min-height: 1.5rem;
+  font-size: 0.875rem;
+}
+
+.viewer-dot {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  margin-right: 0.35rem;
+  border-radius: 50%;
+}
+
+/* A viewer's cursor: a thin line in their colour with their name above it. */
+.remote-cursor {
+  position: relative;
+  margin-left: -1px;
+  margin-right: -1px;
+  border-left: 2px solid var(--cursor-color);
+  pointer-events: none;
+}
+
+.remote-cursor::after {
+  content: attr(data-name);
+  position: absolute;
+  bottom: 100%;
+  left: -2px;
+  padding: 0 0.25rem;
+  border-radius: 3px 3px 3px 0;
+  background: var(--cursor-color);
+  color: #fff;
+  font-size: 0.7rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.name-prompt {
+  display: flex;
+  align-items: end;
+  gap: 0.5rem;
+}
+
+.name-prompt input {
+  display: block;
+  margin-top: 0.25rem;
 }

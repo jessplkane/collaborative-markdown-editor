@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"sync/atomic"
+	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 )
@@ -23,6 +25,28 @@ const (
 	// closeNotFound is the application close code for an unknown entry.
 	closeNotFound = websocket.StatusCode(4004)
 )
+
+const (
+	// Limits on the identity a client announces. Nothing is trusted: these
+	// strings are relayed to every other viewer.
+	maxIDBytes   = 64
+	maxNameRunes = 40
+)
+
+// valid reports whether m is well formed for its type.
+func (m clientMessage) valid() bool {
+	switch m.Type {
+	case "update":
+		return m.ClientID != "" && len(m.Updates) > 0
+	case "hello":
+		return m.ClientID != "" && len(m.ClientID) <= maxIDBytes &&
+			m.UserID != "" && len(m.UserID) <= maxIDBytes &&
+			utf8.RuneCountInString(m.Name) <= maxNameRunes
+	case "cursor":
+		return m.Pos != nil && *m.Pos >= 0 && m.Version >= 0
+	}
+	return false
+}
 
 // ServeWS handles /ws/entries/{id}: it joins the entry's room and then relays
 // between the socket and the room until either side goes away.
@@ -75,18 +99,45 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	go func() {
+		ticker := time.NewTicker(h.pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				pingCtx, cancelPing := context.WithTimeout(ctx, h.pingTimeout)
+				err := conn.Ping(pingCtx)
+				cancelPing()
+				if err != nil {
+					// The peer is gone or not answering. Cancelling ends the
+					// read below, so the room hears about the departure.
+					cancel()
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
 			break
 		}
 		var m clientMessage
-		if err := json.Unmarshal(data, &m); err != nil ||
-			m.Type != "update" || m.ClientID == "" || len(m.Updates) == 0 {
+		if err := json.Unmarshal(data, &m); err != nil || !m.valid() {
 			conn.Close(websocket.StatusInvalidFramePayloadData, "bad message")
 			break
 		}
-		room.update(c, m.ClientID, m.Version, m.Updates)
+		switch m.Type {
+		case "update":
+			room.update(c, m.ClientID, m.Version, m.Updates)
+		case "hello":
+			room.hello(c, m.ClientID, m.UserID, m.Name)
+		case "cursor":
+			room.cursor(c, m.Version, *m.Pos)
+		}
 	}
 
 	cancel()

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"slices"
 	"sync"
 	"time"
 )
@@ -15,6 +16,14 @@ import (
 //
 //	{"type":"update","clientID":"c1","version":N,"updates":[{"changes":[...]}]}
 //	    A batch of steps the client made on top of document version N.
+//	{"type":"hello","clientID":"c1","userID":"u1","name":"Ada"}
+//	    Says who this connection is. Sent once, right after the snapshot, and
+//	    again if the name changes. The connection is listed as a viewer from
+//	    its first hello.
+//	{"type":"cursor","version":N,"pos":P}
+//	    The cursor is at position P (UTF-16 units) of document version N. The
+//	    server relays it unchanged; mapping it onto newer versions is up to
+//	    the receiving browser. Only valid after a hello.
 //
 // server -> client
 //
@@ -26,12 +35,22 @@ import (
 //	{"type":"reject","version":N}
 //	    The client's batch was based on a stale version. The updates that made it
 //	    stale were sent before this message; N is the current version.
+//	{"type":"viewers","viewers":[{"clientID":"c1","userID":"u1","name":"Ada"}]}
+//	    Everyone in the room who has said hello, in join order, including the
+//	    receiver. Sent whenever that set or a name changes.
+//	{"type":"cursor","clientID":"c1","version":N,"pos":P}
+//	    Another viewer's cursor, relayed to everyone but its owner. Because it
+//	    is sent after every update the room had broadcast when it arrived, a
+//	    receiver has always seen version N by the time it reads this.
 
 type clientMessage struct {
 	Type     string `json:"type"`
 	ClientID string `json:"clientID"`
 	Version  int    `json:"version"`
 	Updates  []Step `json:"updates"`
+	UserID   string `json:"userID"`
+	Name     string `json:"name"`
+	Pos      *int   `json:"pos"`
 }
 
 type snapshotMessage struct {
@@ -52,6 +71,24 @@ type rejectMessage struct {
 	Version int    `json:"version"`
 }
 
+type viewer struct {
+	ClientID string `json:"clientID"`
+	UserID   string `json:"userID"`
+	Name     string `json:"name"`
+}
+
+type viewersMessage struct {
+	Type    string   `json:"type"`
+	Viewers []viewer `json:"viewers"`
+}
+
+type cursorMessage struct {
+	Type     string `json:"type"`
+	ClientID string `json:"clientID"`
+	Version  int    `json:"version"`
+	Pos      int    `json:"pos"`
+}
+
 func marshal(v any) []byte {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -68,10 +105,25 @@ type Client struct {
 	// kick closes the connection with a reason. It may be called repeatedly
 	// from any goroutine and must not block.
 	kick func(reason string)
+
+	// Owned by the room's goroutine.
+	seq      int    // join order, which keeps the viewer list stable
+	clientID string // set by hello; empty until then
+	userID   string
+	name     string
 }
 
 type joinMsg struct{ c *Client }
 type leaveMsg struct{ c *Client }
+type helloMsg struct {
+	c                      *Client
+	clientID, userID, name string
+}
+type cursorMsg struct {
+	c       *Client
+	version int
+	pos     int
+}
 type updateMsg struct {
 	c        *Client
 	clientID string
@@ -90,16 +142,23 @@ type Hub struct {
 
 	originPatterns []string
 
+	// pingInterval is how often an idle connection is pinged; one that does
+	// not answer within pingTimeout is closed, which removes it from the room.
+	pingInterval time.Duration
+	pingTimeout  time.Duration
+
 	mu    sync.Mutex
 	rooms map[string]*Room
 }
 
 func NewHub(store *Store) *Hub {
 	return &Hub{
-		store:    store,
-		debounce: time.Second,
-		maxWait:  5 * time.Second,
-		rooms:    make(map[string]*Room),
+		store:        store,
+		debounce:     time.Second,
+		maxWait:      5 * time.Second,
+		rooms:        make(map[string]*Room),
+		pingInterval: 20 * time.Second,
+		pingTimeout:  10 * time.Second,
 	}
 }
 
@@ -163,13 +222,15 @@ type Room struct {
 	done chan struct{} // closed when run has exited
 
 	// Owned by run.
-	doc        Doc
-	version    int
-	clients    map[*Client]struct{}
-	dirty      bool
-	dirtySince time.Time
-	timer      *time.Timer
-	flushC     <-chan time.Time // timer.C while a save is scheduled, else nil
+	doc            Doc
+	version        int
+	clients        map[*Client]struct{}
+	seq            int // last join sequence number handed out
+	viewersChanged bool
+	dirty          bool
+	dirtySince     time.Time
+	timer          *time.Timer
+	flushC         <-chan time.Time // timer.C while a save is scheduled, else nil
 }
 
 // join reports false if the room has already closed.
@@ -197,6 +258,22 @@ func (r *Room) update(c *Client, clientID string, version int, steps []Step) {
 	}
 }
 
+// hello says who c is; the room lists it as a viewer from then on.
+func (r *Room) hello(c *Client, clientID, userID, name string) {
+	select {
+	case r.reqs <- helloMsg{c, clientID, userID, name}:
+	case <-r.done:
+	}
+}
+
+// cursor relays c's cursor position, given in terms of document version.
+func (r *Room) cursor(c *Client, version, pos int) {
+	select {
+	case r.reqs <- cursorMsg{c, version, pos}:
+	case <-r.done:
+	}
+}
+
 func (r *Room) run() {
 	r.timer = time.NewTimer(time.Hour)
 	r.timer.Stop()
@@ -206,16 +283,23 @@ func (r *Room) run() {
 		case msg := <-r.reqs:
 			switch m := msg.(type) {
 			case joinMsg:
+				r.seq++
+				m.c.seq = r.seq
 				r.clients[m.c] = struct{}{}
 				r.send(m.c, marshal(snapshotMessage{"snapshot", r.doc.String(), r.version}))
 			case leaveMsg:
-				delete(r.clients, m.c)
+				r.removeClient(m.c)
 			case updateMsg:
 				r.handleUpdate(m)
+			case helloMsg:
+				r.handleHello(m)
+			case cursorMsg:
+				r.handleCursor(m)
 			}
 		case <-r.flushC:
 			r.flush()
 		}
+		r.sendViewers()
 
 		if len(r.clients) == 0 {
 			// Save before leaving the hub's map, so a room created for the next
@@ -257,6 +341,58 @@ func (r *Room) handleUpdate(m updateMsg) {
 	}
 }
 
+func (r *Room) handleHello(m helloMsg) {
+	if _, ok := r.clients[m.c]; !ok {
+		return
+	}
+	m.c.clientID, m.c.userID, m.c.name = m.clientID, m.userID, m.name
+	r.viewersChanged = true
+}
+
+func (r *Room) handleCursor(m cursorMsg) {
+	if _, ok := r.clients[m.c]; !ok {
+		return
+	}
+	switch {
+	case m.c.clientID == "":
+		r.drop(m.c, "cursor before hello")
+	case m.version > r.version:
+		r.drop(m.c, "version ahead of server")
+	default:
+		data := marshal(cursorMessage{"cursor", m.c.clientID, m.version, m.pos})
+		for c := range r.clients {
+			if c != m.c {
+				r.send(c, data)
+			}
+		}
+	}
+}
+
+// sendViewers tells every client who is in the room. A send can drop a slow
+// client, which changes the list again, hence the loop.
+func (r *Room) sendViewers() {
+	for r.viewersChanged {
+		r.viewersChanged = false
+
+		listed := make([]*Client, 0, len(r.clients))
+		for c := range r.clients {
+			if c.clientID != "" {
+				listed = append(listed, c)
+			}
+		}
+		slices.SortFunc(listed, func(a, b *Client) int { return a.seq - b.seq })
+		viewers := make([]viewer, len(listed))
+		for i, c := range listed {
+			viewers[i] = viewer{c.clientID, c.userID, c.name}
+		}
+
+		data := marshal(viewersMessage{"viewers", viewers})
+		for c := range r.clients {
+			r.send(c, data)
+		}
+	}
+}
+
 // send queues data for c, dropping c if its buffer is full.
 func (r *Room) send(c *Client, data []byte) {
 	select {
@@ -267,8 +403,20 @@ func (r *Room) send(c *Client, data []byte) {
 }
 
 func (r *Room) drop(c *Client, reason string) {
-	delete(r.clients, c)
+	r.removeClient(c)
 	c.kick(reason)
+}
+
+// removeClient takes c out of the room. If c was listed as a viewer, the
+// list is sent again once the current message has been handled.
+func (r *Room) removeClient(c *Client) {
+	if _, ok := r.clients[c]; !ok {
+		return
+	}
+	delete(r.clients, c)
+	if c.clientID != "" {
+		r.viewersChanged = true
+	}
 }
 
 func (r *Room) markDirty() {

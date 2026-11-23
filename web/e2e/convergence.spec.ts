@@ -1,25 +1,16 @@
-import { type Browser, expect, type Page, test } from '@playwright/test'
-
-async function openEntry(browser: Browser, entryId: string): Promise<Page> {
-  const context = await browser.newContext()
-  const page = await context.newPage()
-  await page.goto(`/entries/${entryId}`)
-  await expect(page.getByRole('status')).toHaveText('Connected')
-  await page.locator('.cm-content').click()
-  return page
-}
-
-const editorText = (page: Page) => page.locator('.cm-content').innerText()
+import { test, expect } from '@playwright/test'
+import { createEntry, editorText, openEntry } from './helpers.ts'
 
 test('two browsers typing at once end with identical text', async ({
   browser,
   request,
 }) => {
-  const created = await request.post('/api/entries')
-  expect(created.ok()).toBe(true)
-  const { id } = (await created.json()) as { id: string }
+  const id = await createEntry(request)
 
-  const [a, b] = await Promise.all([openEntry(browser, id), openEntry(browser, id)])
+  const [a, b] = await Promise.all([
+    openEntry(browser, id, 'Ada'),
+    openEntry(browser, id, 'Grace'),
+  ])
 
   // Both type into the same spot of an empty document with no pause between
   // keys, so each one's edits are made on top of versions the other has
@@ -53,6 +44,6 @@ test('two browsers typing at once end with identical text', async ({
   await expect(a.getByLabel('Preview')).toHaveText(textOnA)
 
   // The server holds the same document: a fresh browser sees it.
-  const c = await openEntry(browser, id)
+  const c = await openEntry(browser, id, 'Newcomer')
   expect(await editorText(c)).toBe(textOnA)
 })

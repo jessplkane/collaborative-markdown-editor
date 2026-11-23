@@ -8,9 +8,21 @@ import {
   ChangeSet,
   type EditorState,
   type Extension,
+  StateEffect,
 } from '@codemirror/state'
 import { type EditorView, ViewPlugin, type ViewUpdate } from '@codemirror/view'
-import type { ServerMessage, UpdateMessage, WireChange } from './protocol.ts'
+import type {
+  ClientMessage,
+  ServerMessage,
+  WireChange,
+} from './protocol.ts'
+import { StepLog } from './stepLog.ts'
+
+/**
+ * Marks the transaction that applies another client's updates with that
+ * client's id, so a viewer can tell whose edit moved things.
+ */
+export const updateAuthor = StateEffect.define<string>()
 
 export interface CollabOptions {
   clientID: string
@@ -18,7 +30,7 @@ export interface CollabOptions {
   version: number
   /** Length (UTF-16 units) of the snapshot document. */
   docLength: number
-  send: (message: UpdateMessage) => void
+  send: (message: ClientMessage) => void
   /** The server's updates could not be applied in order; the editor can no
    * longer be trusted to match the server. */
   onDesync: (reason: string) => void
@@ -28,8 +40,23 @@ export interface CollabClient {
   extension: Extension
   /** Call once, right after creating the EditorView with `extension`. */
   attach: (view: EditorView) => void
-  /** Handle a server message other than the snapshot. */
-  handle: (message: Exclude<ServerMessage, { type: 'snapshot' }>) => void
+  /** Handle an update or rejection from the server. */
+  handle: (
+    message: Extract<ServerMessage, { type: 'updates' | 'reject' }>,
+  ) => void
+  /**
+   * Turns a position in the editor into one the server's document can
+   * interpret: the position as it was at the last synced version, ignoring
+   * edits the server has not confirmed yet.
+   */
+  toSyncedPos: (pos: number) => { version: number; pos: number }
+  /**
+   * The reverse, for positions that arrive from other clients: a position of
+   * client `owner` in server document `version` becomes a position in the
+   * editor, carried through the updates since then and through our
+   * unconfirmed edits. Undefined if that version is no longer remembered.
+   */
+  toEditorPos: (version: number, pos: number, owner: string) => number | undefined
 }
 
 /**
@@ -50,6 +77,7 @@ export function createCollab(opts: CollabOptions): CollabClient {
   // edits. Wire changes carry no length, so it is tracked here to build
   // ChangeSets for incoming steps.
   let syncedLength = opts.docLength
+  const history = new StepLog(opts.version)
 
   function push(state: EditorState) {
     if (inFlight) return
@@ -72,7 +100,9 @@ export function createCollab(opts: CollabOptions): CollabClient {
     },
   )
 
-  function handle(message: Exclude<ServerMessage, { type: 'snapshot' }>) {
+  function handle(
+    message: Extract<ServerMessage, { type: 'updates' | 'reject' }>,
+  ) {
     if (!view) return
 
     if (message.type === 'reject') {
@@ -99,10 +129,33 @@ export function createCollab(opts: CollabOptions): CollabClient {
       opts.onDesync(`unusable update: ${String(err)}`)
       return
     }
+    for (const u of updates) history.push(u.changes, message.clientID)
 
     if (message.clientID === opts.clientID) inFlight = false
-    view.dispatch(receiveUpdates(state, updates))
+    const spec = receiveUpdates(state, updates)
+    view.dispatch({
+      ...spec,
+      effects: [spec.effects ?? [], updateAuthor.of(message.clientID)].flat(),
+    })
     push(view.state)
+  }
+
+  function toSyncedPos(pos: number) {
+    const state = view!.state
+    const unconfirmed = sendableUpdates(state)
+    let synced = pos
+    for (let i = unconfirmed.length - 1; i >= 0; i--) {
+      synced = unconfirmed[i].changes.desc.invertedDesc.mapPos(synced, -1)
+    }
+    return { version: getSyncedVersion(state), pos: synced }
+  }
+
+  function toEditorPos(version: number, pos: number, owner: string) {
+    const state = view!.state
+    let mapped = history.mapToNewest(version, pos, owner)
+    if (mapped === undefined) return undefined
+    for (const u of sendableUpdates(state)) mapped = u.changes.mapPos(mapped, -1)
+    return Math.min(mapped, state.doc.length)
   }
 
   return {
@@ -114,6 +167,8 @@ export function createCollab(opts: CollabOptions): CollabClient {
       view = v
     },
     handle,
+    toSyncedPos,
+    toEditorPos,
   }
 }
 

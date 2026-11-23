@@ -21,10 +21,35 @@ export interface UpdateMessage {
   updates: WireStep[]
 }
 
+/** Says who this connection is. Sent right after the snapshot. */
+export interface HelloMessage {
+  type: 'hello'
+  clientID: string
+  userID: string
+  name: string
+}
+
+/** The sender's cursor, as a position in document `version`. */
+export interface CursorMessage {
+  type: 'cursor'
+  version: number
+  pos: number
+}
+
+export type ClientMessage = UpdateMessage | HelloMessage | CursorMessage
+
+export interface Viewer {
+  clientID: string
+  userID: string
+  name: string
+}
+
 export type ServerMessage =
   | { type: 'snapshot'; doc: string; version: number }
   | { type: 'updates'; version: number; clientID: string; updates: WireStep[] }
   | { type: 'reject'; version: number }
+  | { type: 'viewers'; viewers: Viewer[] }
+  | { type: 'cursor'; clientID: string; version: number; pos: number }
 
 /** Close code the server uses when the entry does not exist. */
 export const CLOSE_NOT_FOUND = 4004
