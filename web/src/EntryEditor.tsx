@@ -239,7 +239,9 @@ export function EntryEditor({
       // The editor stays editable: what is typed now is sent once resumed.
       client?.pause()
       presence?.reset()
-      setStatus('reconnecting')
+      // Before the first snapshot there are no edits to keep; it is still
+      // just connecting.
+      setStatus(view ? 'reconnecting' : 'connecting')
       retry = window.setTimeout(connect, backoffDelay(attempt++))
     }
 

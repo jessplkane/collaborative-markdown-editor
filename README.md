@@ -130,6 +130,7 @@ The lifecycle tests cover deleting an entry in a room (every client closed with 
 
 The browser tests live in `web/e2e/` and need Chromium once (`npx playwright install chromium`). `npm run e2e` starts its own Go server (throwaway database, port 8181) and Vite (port 5273), so it can run while `make dev` is up.
 
+- `entries.spec.ts` walks the list UI: create an entry, type a heading, see it listed under its derived title, reopen it, decline and then accept the delete confirmation, and see the entry's address report that it no longer exists.
 - `convergence.spec.ts` opens two browser contexts on one entry, types into both at the same time, and checks that both editors, the preview and a third, fresh browser show the same text, with each writer's keystrokes complete and in order.
 - `presence.spec.ts` covers the name prompt, the viewer list (including leaving when a page closes), and remote cursors: where they are drawn, how they follow edits from either side, and that a late joiner sees existing cursors.
 - `lifecycle.spec.ts` deletes an entry (through the REST API) while two pages have it open and checks both land on the list with a notice, and that a paste past the size cap is refused, leaves the other viewer and the saved text untouched, and is not retried.
@@ -149,24 +150,44 @@ The frontend and the server deploy separately.
 - A lone UTF-16 surrogate in an edit (half of an emoji sent on its own) becomes U+FFFD when the server decodes the JSON. Positions stay aligned, but that character's content differs between that client and the server. Full characters, including emoji, are handled correctly.
 - Entries have no owner or access control: anyone with the URL can read and edit it. In particular, `clientID`s are visible in the viewer list, so anyone can close another viewer's connection by claiming its `clientID`.
 - Reconnecting depends on the client noticing the connection is gone, which takes up to 15 seconds when the network dies without closing the socket (see the heartbeat under Reconnect and resume). Edits typed in that window are kept, not lost.
+- A hard kill (`SIGKILL`, a crash, power loss) still loses edits from roughly the last second: only graceful shutdown flushes. A server restart also starts new room instances, so a client reconnecting afterwards gets a snapshot and loses edits it had not yet had confirmed (it is told so).
+- In development, the Vite proxy logs `ws proxy error` (`ECONNRESET`, `EPIPE`) when a socket is killed abruptly. Reconnecting makes that a normal event; the messages are harmless.
+
+## Follow-ups / out of scope
+
+- **Live list updates and viewer counts.** The entries list is fetched when the page opens. It does not update when someone else creates, edits or deletes an entry, and does not show who has an entry open.
+- **Remote selections.** Other viewers' cursors are shown, but not their selected ranges.
+- **Renaming.** A viewer's name can only change by clearing `localStorage`.
+- **WYSIWYG.** The editor is plain markdown beside a preview.
+- **Auth and ownership.** There are no accounts, so there is no private entry and no way to tell who deleted one.
+- **More than one server instance.** Rooms live in one process's memory, so two instances would split an entry's editors into separate rooms that overwrite each other's saves. Scaling out needs every connection for an entry routed to the same instance (consistent routing on the entry id), or a shared layer between instances for sequencing and fan-out.
 
 ## Layout
 
 ```
 server/
-  main.go        wiring, config, graceful HTTP shutdown
+  main.go        wiring, config, graceful shutdown
   api.go         REST handlers
   store.go       SQLite store
   document.go    UTF-16 document, applying changes, title derivation
-  room.go        hub, rooms, wire protocol
+  room.go        hub, rooms, wire protocol, shutdown
   history.go     bounded log of accepted batches, for resume
-  ws.go          WebSocket handler
+  ws.go          WebSocket handler, close codes, size limits
   cors.go        CORS and allowed-origin matching
+  *_test.go      unit and websocket integration tests
+  Dockerfile, fly.toml
 web/src/
-  router.tsx, EntriesPage.tsx, EntryPage.tsx
+  main.tsx, router.tsx
+  EntriesPage.tsx, EntryPage.tsx, NamePrompt.tsx
   EntryEditor.tsx  CodeMirror editor, preview and socket lifecycle
   collab.ts        client half of the sync protocol
+  presence.ts      viewers, remote cursors, throttled cursor reports
+  stepLog.ts       recent steps, to carry a cursor to the newest version
   backoff.ts       reconnect delays
   heartbeat.ts     detects a connection that went quiet
-  protocol.ts, config.ts, api.ts
+  protocol.ts      message types and close codes (mirrors room.go)
+  identity.ts      user id, name and colour
+  api.ts, config.ts
+  *.test.ts        Vitest unit tests
+web/e2e/           Playwright specs and helpers
 ```
