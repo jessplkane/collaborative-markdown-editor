@@ -134,7 +134,7 @@ The browser tests live in `web/e2e/` and need Chromium once (`npx playwright ins
 - `convergence.spec.ts` opens two browser contexts on one entry, types into both at the same time, and checks that both editors, the preview and a third, fresh browser show the same text, with each writer's keystrokes complete and in order.
 - `presence.spec.ts` covers the name prompt, the viewer list (including leaving when a page closes), and remote cursors: where they are drawn, how they follow edits from either side, and that a late joiner sees existing cursors.
 - `lifecycle.spec.ts` deletes an entry (through the REST API) while two pages have it open and checks both land on the list with a notice, and that a paste past the size cap is refused, leaves the other viewer and the saved text untouched, and is not retried.
-- `reconnect.spec.ts` severs a page's socket with `page.routeWebSocket` while it and another page keep typing, and checks that nothing is lost and both converge; that a lone client resumes too; and that when the history cannot cover the gap the editor reloads and reports the dropped edits.
+- `reconnect.spec.ts` severs a page's socket with `page.routeWebSocket` while it and another page keep typing, and checks that nothing is lost and both converge; that a lone client resumes too; that when the history cannot cover the gap the editor reloads and reports the dropped edits; and that a failed re-check of the entry (the page refetches it on focus) leaves the open editor in place.
 
 `npm test` runs the Vitest unit tests: `web/src/stepLog.ts` (the log that carries a cursor from the version its owner reported to the version you have), the reconnect backoff, and which close codes are worth retrying.
 

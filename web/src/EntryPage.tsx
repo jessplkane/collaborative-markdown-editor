@@ -23,14 +23,19 @@ export function EntryPage({ entryId }: { entryId: string }) {
       <p>
         <Link to="/">← All entries</Link>
       </p>
-      {entry.isPending && <p>Loading…</p>}
-      {entry.error instanceof NotFoundError && (
+      {/* Once the entry has been seen to exist, a failed re-check (the query
+          refetches when the tab regains focus) must not take the editor away:
+          it holds edits the server has not confirmed. */}
+      {!entry.data && entry.isPending && <p>Loading…</p>}
+      {!entry.data && entry.error instanceof NotFoundError && (
         <p role="alert">This entry does not exist.</p>
       )}
-      {entry.isError && !(entry.error instanceof NotFoundError) && (
-        <p role="alert">Could not load this entry.</p>
-      )}
-      {entry.isSuccess &&
+      {!entry.data &&
+        entry.isError &&
+        !(entry.error instanceof NotFoundError) && (
+          <p role="alert">Could not load this entry.</p>
+        )}
+      {entry.data &&
         (name ? (
           <EntryEditor
             entryId={entryId}

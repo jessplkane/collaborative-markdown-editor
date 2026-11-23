@@ -137,3 +137,31 @@ test('when the server cannot replay what was missed, the editor reloads the docu
   await a.keyboard.type('Y')
   await expect.poll(() => editorText(b)).toContain('Y')
 })
+
+// The page re-checks that the entry exists whenever the tab regains focus. If
+// that check fails (a blip, a deploy, a cold start) the open editor must stay:
+// it holds edits the server has not confirmed. A 404 is used because it is not
+// retried, so the failure lands at once; any failure ends the same way.
+test('a failed re-check of the entry does not tear down the open editor', async ({
+  browser,
+  request,
+}) => {
+  const id = await createEntry(request)
+  const a = await openEntry(browser, id, 'Ada')
+  await a.keyboard.type('kept')
+  await expect.poll(() => editorText(a)).toBe('kept')
+
+  await a.route(`**/api/entries/${id}`, (route) => route.fulfill({ status: 404 }))
+  const refetched = a.waitForResponse(`**/api/entries/${id}`)
+  await a.evaluate(() => window.dispatchEvent(new Event('visibilitychange')))
+  await refetched
+  // Let the failure reach the page's state before looking.
+  // (The e2e tsconfig's lib predates Promise.withResolvers.)
+  await a.evaluate(
+    () => new Promise((done) => requestAnimationFrame(() => setTimeout(done))),
+  )
+
+  await expect(a.getByRole('status')).toHaveText('Connected')
+  await expect(a.getByText('This entry does not exist.')).toHaveCount(0)
+  expect(await editorText(a)).toBe('kept')
+})
