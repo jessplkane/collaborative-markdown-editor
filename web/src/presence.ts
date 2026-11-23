@@ -34,6 +34,12 @@ export interface Presence {
   attach: (view: EditorView) => void
   /** Announce this client. Must come before any cursor is sent. */
   hello: () => void
+  /**
+   * The connection is gone. Nobody can be seen or heard from until it is
+   * back, so the viewers and their cursors are cleared; the next `hello`
+   * starts over.
+   */
+  reset: () => void
   handle: (message: Extract<ServerMessage, { type: 'viewers' | 'cursor' }>) => void
   destroy: () => void
 }
@@ -207,6 +213,16 @@ export function createPresence(opts: PresenceOptions): Presence {
     }
   }
 
+  function reset() {
+    window.clearTimeout(timer)
+    timer = undefined
+    helloSent = false
+    lastSent = undefined
+    known = new Set()
+    view?.dispatch({ effects: setViewers.of(new Map()) })
+    opts.onViewers([])
+  }
+
   return {
     extension: [cursorField, plugin],
     attach: (v) => {
@@ -222,6 +238,7 @@ export function createPresence(opts: PresenceOptions): Presence {
       helloSent = true
       scheduleCursor()
     },
+    reset,
     handle,
     destroy: () => window.clearTimeout(timer),
   }

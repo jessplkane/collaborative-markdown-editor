@@ -51,6 +51,22 @@ export interface CollabClient {
    */
   toSyncedPos: (pos: number) => { version: number; pos: number }
   /**
+   * The connection is gone: stop sending. Edits keep piling up as
+   * unconfirmed ones, and the batch that was in flight is forgotten, since
+   * whether the server got it is only learned when the connection is resumed.
+   */
+  pause: () => void
+  /**
+   * The server finished replaying what was missed and is at `version`: send
+   * whatever is still unconfirmed. A batch the server did apply was
+   * confirmed by the replay, one it did not is simply sent again.
+   */
+  resume: (version: number) => void
+  /** Version of the server's document this client has caught up to. */
+  version: () => number
+  /** Whether there are local edits the server has not confirmed. */
+  hasUnconfirmed: () => boolean
+  /**
    * The reverse, for positions that arrive from other clients: a position of
    * client `owner` in server document `version` becomes a position in the
    * editor, carried through the updates since then and through our
@@ -73,6 +89,7 @@ export interface CollabClient {
 export function createCollab(opts: CollabOptions): CollabClient {
   let view: EditorView | undefined
   let inFlight = false
+  let paused = false
   // Length of the document as the server has it, i.e. without our unconfirmed
   // edits. Wire changes carry no length, so it is tracked here to build
   // ChangeSets for incoming steps.
@@ -80,7 +97,7 @@ export function createCollab(opts: CollabOptions): CollabClient {
   const history = createStepLog(opts.version)
 
   function push(state: EditorState) {
-    if (inFlight) return
+    if (inFlight || paused) return
     const updates = sendableUpdates(state)
     if (updates.length === 0) return
     inFlight = true
@@ -158,6 +175,23 @@ export function createCollab(opts: CollabOptions): CollabClient {
     return Math.min(mapped, state.doc.length)
   }
 
+  function pause() {
+    paused = true
+    inFlight = false
+  }
+
+  function resume(version: number) {
+    if (!view) return
+    const synced = getSyncedVersion(view.state)
+    if (synced !== version) {
+      opts.onDesync(`resumed at version ${version}, but caught up to ${synced}`)
+      return
+    }
+    paused = false
+    inFlight = false
+    push(view.state)
+  }
+
   return {
     extension: [
       collab({ startVersion: opts.version, clientID: opts.clientID }),
@@ -169,6 +203,10 @@ export function createCollab(opts: CollabOptions): CollabClient {
     handle,
     toSyncedPos,
     toEditorPos,
+    pause,
+    resume,
+    version: () => (view ? getSyncedVersion(view.state) : opts.version),
+    hasUnconfirmed: () => (view ? sendableUpdates(view.state).length > 0 : false),
   }
 }
 

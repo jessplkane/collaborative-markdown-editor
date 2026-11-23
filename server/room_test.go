@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 type serverMsg struct {
@@ -17,18 +19,24 @@ type serverMsg struct {
 	Updates  []Step   `json:"updates"`
 	Viewers  []viewer `json:"viewers"`
 	Pos      int      `json:"pos"`
+	Epoch    string   `json:"epoch"`
+}
+
+type kickEvent struct {
+	code   websocket.StatusCode
+	reason string
 }
 
 type testClient struct {
 	*Client
-	kicks chan string
+	kicks chan kickEvent
 }
 
 func newTestClient(buffer int) *testClient {
-	tc := &testClient{kicks: make(chan string, 8)}
+	tc := &testClient{kicks: make(chan kickEvent, 8)}
 	tc.Client = &Client{
 		send: make(chan []byte, buffer),
-		kick: func(reason string) { tc.kicks <- reason },
+		kick: func(code websocket.StatusCode, reason string) { tc.kicks <- kickEvent{code, reason} },
 	}
 	return tc
 }
@@ -57,14 +65,14 @@ func (tc *testClient) expectNothing(t *testing.T) {
 	}
 }
 
-func (tc *testClient) expectKick(t *testing.T) string {
+func (tc *testClient) expectKick(t *testing.T) kickEvent {
 	t.Helper()
 	select {
-	case reason := <-tc.kicks:
-		return reason
+	case k := <-tc.kicks:
+		return k
 	case <-time.After(2 * time.Second):
 		t.Fatal("client was not kicked")
-		return ""
+		return kickEvent{}
 	}
 }
 
@@ -75,7 +83,10 @@ func newTestHub(t *testing.T) (*Hub, *Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	return NewHub(store), store
+	h := NewHub(store)
+	// Most tests want rooms to go away with their last client.
+	h.linger = 0
+	return h, store
 }
 
 func newEntry(t *testing.T, store *Store, content string) string {
@@ -235,8 +246,9 @@ func TestSlowClientIsDroppedWithoutStallingTheRoom(t *testing.T) {
 	}
 
 	room.update(fast.Client, "f", 0, insert(0, "x"))
-	if reason := slow.expectKick(t); reason != "too slow" {
-		t.Fatalf("reason %q", reason)
+	// Transient, so the client is told it may try again.
+	if k := slow.expectKick(t); k.reason != "too slow" || k.code != websocket.StatusTryAgainLater {
+		t.Fatalf("kicked with %+v", k)
 	}
 	if m := fast.recv(t); m.Type != "updates" {
 		t.Fatalf("got %+v", m)

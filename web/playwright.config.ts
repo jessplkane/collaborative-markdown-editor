@@ -21,6 +21,10 @@ export default defineConfig({
       env: {
         PORT: String(goPort),
         DB_PATH: `${process.env.TMPDIR ?? '/tmp'}/markdown-editor-e2e-${process.pid}.db`,
+        // Small enough that one large paste makes the server unable to replay
+        // what a disconnected client missed (reconnect.spec.ts), large enough
+        // that a few keystrokes are replayable.
+        RESUME_LOG_BYTES: '2048',
       },
       url: `http://localhost:${goPort}/api/entries`,
       reuseExistingServer: false,

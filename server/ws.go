@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -24,6 +25,10 @@ const (
 
 	// closeNotFound is the application close code for an unknown entry.
 	closeNotFound = websocket.StatusCode(4004)
+
+	// closeReplaced is sent to a connection whose client (same clientID)
+	// has opened a newer one.
+	closeReplaced = websocket.StatusCode(4009)
 )
 
 const (
@@ -32,6 +37,10 @@ const (
 	maxIDBytes   = 64
 	maxNameRunes = 40
 )
+
+var pongMessage = marshal(struct {
+	Type string `json:"type"`
+}{"pong"})
 
 // valid reports whether m is well formed for its type.
 func (m clientMessage) valid() bool {
@@ -42,6 +51,8 @@ func (m clientMessage) valid() bool {
 		return m.ClientID != "" && len(m.ClientID) <= maxIDBytes &&
 			m.UserID != "" && len(m.UserID) <= maxIDBytes &&
 			utf8.RuneCountInString(m.Name) <= maxNameRunes
+	case "ping":
+		return true
 	case "cursor":
 		return m.Pos != nil && *m.Pos >= 0 && m.Version >= 0
 	}
@@ -64,11 +75,18 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	c := &Client{send: make(chan []byte, clientSendBuffer)}
+	if epoch := r.URL.Query().Get("epoch"); epoch != "" {
+		// A malformed version is treated as a plain join: the snapshot that
+		// follows is always safe.
+		if v, err := strconv.Atoi(r.URL.Query().Get("version")); err == nil {
+			c.resume = &resumeRequest{epoch, v}
+		}
+	}
 	var kicked atomic.Bool
-	c.kick = func(reason string) {
+	c.kick = func(code websocket.StatusCode, reason string) {
 		if kicked.CompareAndSwap(false, true) {
 			// Close blocks for the closing handshake; the room must not wait.
-			go conn.Close(websocket.StatusPolicyViolation, reason)
+			go conn.Close(code, reason)
 		}
 	}
 
@@ -135,6 +153,12 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 			room.update(c, m.ClientID, m.Version, m.Updates)
 		case "hello":
 			room.hello(c, m.ClientID, m.UserID, m.Name)
+		case "ping":
+			// Answered here, not by the room: it is about this connection.
+			select {
+			case c.send <- pongMessage:
+			default: // the client is already being dropped as too slow
+			}
 		case "cursor":
 			room.cursor(c, m.Version, *m.Pos)
 		}

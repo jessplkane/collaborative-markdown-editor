@@ -36,7 +36,16 @@ export interface CursorMessage {
   pos: number
 }
 
-export type ClientMessage = UpdateMessage | HelloMessage | CursorMessage
+/** Asks for a `pong`, so the client can tell a live connection from a dead one. */
+export interface PingMessage {
+  type: 'ping'
+}
+
+export type ClientMessage =
+  | UpdateMessage
+  | HelloMessage
+  | CursorMessage
+  | PingMessage
 
 export interface Viewer {
   clientID: string
@@ -45,7 +54,9 @@ export interface Viewer {
 }
 
 export type ServerMessage =
-  | { type: 'snapshot'; doc: string; version: number }
+  | { type: 'snapshot'; doc: string; version: number; epoch: string }
+  | { type: 'pong' }
+  | { type: 'resumed'; version: number }
   | { type: 'updates'; version: number; clientID: string; updates: WireStep[] }
   | { type: 'reject'; version: number }
   | { type: 'viewers'; viewers: Viewer[] }
@@ -53,3 +64,26 @@ export type ServerMessage =
 
 /** Close code the server uses when the entry does not exist. */
 export const CLOSE_NOT_FOUND = 4004
+
+/** The server closed this connection because the same client opened another. */
+export const CLOSE_REPLACED = 4009
+
+/**
+ * Close codes after which reconnecting cannot help: the entry is gone, the
+ * server is no longer talking to this client, or it refused what the client
+ * sent (1007 malformed message, 1008 policy violation, 1009 message too
+ * big), which would be refused again. Every other close, including the
+ * server's "try again later" (1013) and "going away" (1001) and an abnormal
+ * drop (1006), is worth retrying.
+ */
+const TERMINAL_CLOSE_CODES = new Set([
+  1007,
+  1008,
+  1009,
+  CLOSE_NOT_FOUND,
+  CLOSE_REPLACED,
+])
+
+export function isTerminalClose(code: number): boolean {
+  return TERMINAL_CLOSE_CODES.has(code)
+}

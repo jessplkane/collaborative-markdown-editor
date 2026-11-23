@@ -53,6 +53,28 @@ main.wide {
   color: #b00020;
 }
 
+/* Not an error: the editor keeps working and recovers on its own. */
+.status[data-status='reconnecting'] {
+  padding: 0.35rem 0.6rem;
+  border: 1px solid #e0b000;
+  border-radius: 4px;
+  background: #fff8db;
+  color: #5c4500;
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  justify-content: space-between;
+  margin: 0 0 0.5rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid #b00020;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  color: #b00020;
+}
+
 .panes {
   display: grid;
   grid-template-columns: 1fr 1fr;

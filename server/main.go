@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -37,6 +39,13 @@ func run() error {
 
 	hub := NewHub(store)
 	hub.originPatterns = origins
+	if v := os.Getenv("RESUME_LOG_BYTES"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return fmt.Errorf("RESUME_LOG_BYTES must be a non-negative integer, got %q", v)
+		}
+		hub.historyLimit = n
+	}
 
 	mux := http.NewServeMux()
 	(&API{store: store}).Register(mux)

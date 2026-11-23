@@ -204,3 +204,14 @@ func TestWebSocketOriginCheck(t *testing.T) {
 		}
 	}
 }
+
+func TestWebSocketPingIsAnswered(t *testing.T) {
+	srv, store := newWSServer(t)
+	conn := mustDial(t, srv, newEntry(t, store, ""))
+	readServerMsg(t, conn)
+
+	sendJSON(t, conn, map[string]string{"type": "ping"})
+	if m := readServerMsg(t, conn); m.Type != "pong" {
+		t.Fatalf("got %+v", m)
+	}
+}

@@ -2,15 +2,27 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log"
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 // Wire protocol, JSON text frames.
+//
+// The websocket URL may carry ?epoch=E&version=N, meaning "I last saw version
+// N of the room instance E; continue from there". Versions restart at 0 with
+// every room instance, so the epoch is what says N means anything to this
+// room. If E matches, the history covers N and the gap fits the client's send
+// buffer, the room replays the missed batches and then sends "resumed";
+// otherwise it sends a snapshot as for a new client, and whatever the client
+// had not yet had confirmed is lost.
 //
 // client -> server
 //
@@ -24,11 +36,19 @@ import (
 //	    The cursor is at position P (UTF-16 units) of document version N. The
 //	    server relays it unchanged; mapping it onto newer versions is up to
 //	    the receiving browser. Only valid after a hello.
+//	{"type":"ping"}
+//	    Liveness probe, answered with "pong". A browser cannot see websocket
+//	    ping frames, and a connection through a proxy or a dead network can
+//	    look open for a long time; the client closes one that goes quiet.
 //
 // server -> client
 //
-//	{"type":"snapshot","doc":"...","version":N}
-//	    Sent once, first, when joining.
+//	{"type":"snapshot","doc":"...","version":N,"epoch":"E"}
+//	    Sent first when joining, unless the join resumed.
+//	{"type":"resumed","version":N}
+//	    Sent first when a resume succeeded, after the missed "updates"
+//	    messages, which are the original batches with their original
+//	    clientIDs. N is the current version; the client is caught up.
 //	{"type":"updates","version":N,"clientID":"c1","updates":[...]}
 //	    An accepted batch, based on version N. Broadcast to every client in the
 //	    room including its author, whose clientID tells it the batch is confirmed.
@@ -42,6 +62,8 @@ import (
 //	    Another viewer's cursor, relayed to everyone but its owner. Because it
 //	    is sent after every update the room had broadcast when it arrived, a
 //	    receiver has always seen version N by the time it reads this.
+//	{"type":"pong"}
+//	    The answer to "ping".
 
 type clientMessage struct {
 	Type     string `json:"type"`
@@ -56,6 +78,12 @@ type clientMessage struct {
 type snapshotMessage struct {
 	Type    string `json:"type"`
 	Doc     string `json:"doc"`
+	Version int    `json:"version"`
+	Epoch   string `json:"epoch"`
+}
+
+type resumedMessage struct {
+	Type    string `json:"type"`
 	Version int    `json:"version"`
 }
 
@@ -102,15 +130,23 @@ func marshal(v any) []byte {
 // send to it, so a slow connection cannot stall the room.
 type Client struct {
 	send chan []byte
-	// kick closes the connection with a reason. It may be called repeatedly
-	// from any goroutine and must not block.
-	kick func(reason string)
+	// kick closes the connection with a close code and reason. It may be
+	// called repeatedly from any goroutine and must not block.
+	kick func(code websocket.StatusCode, reason string)
+
+	// resume is set before joining by a client that is reconnecting.
+	resume *resumeRequest
 
 	// Owned by the room's goroutine.
 	seq      int    // join order, which keeps the viewer list stable
 	clientID string // set by hello; empty until then
 	userID   string
 	name     string
+}
+
+type resumeRequest struct {
+	epoch   string
+	version int
 }
 
 type joinMsg struct{ c *Client }
@@ -147,6 +183,15 @@ type Hub struct {
 	pingInterval time.Duration
 	pingTimeout  time.Duration
 
+	// linger is how long an empty room stays in memory before it exits. A
+	// client whose connection dropped is usually back within seconds, and
+	// needs the room (its epoch and history) to resume rather than reload.
+	linger time.Duration
+
+	// historyLimit bounds the estimated size of the batches a room keeps for
+	// replay; see history.
+	historyLimit int
+
 	mu    sync.Mutex
 	rooms map[string]*Room
 }
@@ -159,6 +204,8 @@ func NewHub(store *Store) *Hub {
 		rooms:        make(map[string]*Room),
 		pingInterval: 20 * time.Second,
 		pingTimeout:  10 * time.Second,
+		linger:       30 * time.Second,
+		historyLimit: 4 << 20,
 	}
 }
 
@@ -191,9 +238,11 @@ func (h *Hub) room(ctx context.Context, id string) (*Room, error) {
 	r := &Room{
 		id:      id,
 		hub:     h,
+		epoch:   newEpoch(),
 		reqs:    make(chan any),
 		done:    make(chan struct{}),
 		doc:     NewDoc(content),
+		history: history{limit: h.historyLimit},
 		clients: make(map[*Client]struct{}),
 	}
 	h.rooms[id] = r
@@ -209,21 +258,33 @@ func (h *Hub) remove(r *Room) {
 	}
 }
 
+func newEpoch() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand does not fail on supported platforms.
+		panic(err)
+	}
+	return hex.EncodeToString(b)
+}
+
 // Room is the single authority for one entry. One goroutine (run) owns all of
 // its mutable state; everything else talks to it over reqs, so updates are
 // sequenced by arrival order and no locks are needed.
 //
-// A room lives while it has clients. When the last one leaves it saves, removes
-// itself from the hub, and exits.
+// A room lives while it has clients, and for Hub.linger after the last one
+// leaves. It saves when the last client leaves and again before it exits, then
+// removes itself from the hub.
 type Room struct {
-	id   string
-	hub  *Hub
-	reqs chan any      // unbuffered: a completed send means run has the message
-	done chan struct{} // closed when run has exited
+	id    string
+	hub   *Hub
+	epoch string        // identifies this room instance; see the protocol notes
+	reqs  chan any      // unbuffered: a completed send means run has the message
+	done  chan struct{} // closed when run has exited
 
 	// Owned by run.
 	doc            Doc
 	version        int
+	history        history
 	clients        map[*Client]struct{}
 	seq            int // last join sequence number handed out
 	viewersChanged bool
@@ -278,6 +339,10 @@ func (r *Room) run() {
 	r.timer = time.NewTimer(time.Hour)
 	r.timer.Stop()
 
+	// While the room is empty and waiting for someone to come back.
+	var lingerT *time.Timer
+	var lingerC <-chan time.Time
+
 	for {
 		select {
 		case msg := <-r.reqs:
@@ -286,7 +351,7 @@ func (r *Room) run() {
 				r.seq++
 				m.c.seq = r.seq
 				r.clients[m.c] = struct{}{}
-				r.send(m.c, marshal(snapshotMessage{"snapshot", r.doc.String(), r.version}))
+				r.welcome(m.c)
 			case leaveMsg:
 				r.removeClient(m.c)
 			case updateMsg:
@@ -298,21 +363,57 @@ func (r *Room) run() {
 			}
 		case <-r.flushC:
 			r.flush()
+		case <-lingerC:
+			r.finish()
+			return
 		}
 		r.sendViewers()
 
-		if len(r.clients) == 0 {
-			// Save before leaving the hub's map, so a room created for the next
-			// joiner loads this room's final content.
-			r.flush()
-			if r.dirty {
-				log.Printf("room %s: final save failed, unsaved edits lost", r.id)
+		switch {
+		case len(r.clients) > 0 && lingerT != nil:
+			lingerT.Stop()
+			lingerT, lingerC = nil, nil
+		case len(r.clients) == 0 && lingerT == nil:
+			if r.hub.linger <= 0 {
+				r.finish()
+				return
 			}
-			r.hub.remove(r)
-			close(r.done)
+			// Persist now rather than relying on someone coming back.
+			r.flush()
+			lingerT = time.NewTimer(r.hub.linger)
+			lingerC = lingerT.C
+		}
+	}
+}
+
+// finish saves and leaves the hub's map before closing done, so a room
+// created for the next joiner loads this room's final content.
+func (r *Room) finish() {
+	r.flush()
+	if r.dirty {
+		log.Printf("room %s: final save failed, unsaved edits lost", r.id)
+	}
+	r.hub.remove(r)
+	close(r.done)
+}
+
+// welcome sends a newly joined client what it needs to start: the batches it
+// missed if it is resuming and they are all available, else a snapshot.
+func (r *Room) welcome(c *Client) {
+	if req := c.resume; req != nil && req.epoch == r.epoch {
+		missed, ok := r.history.since(req.version, r.version)
+		// Everything must fit the client's buffer: the room sends without
+		// waiting, and a client dropped for being slow mid-replay would only
+		// come back and be dropped again.
+		if ok && len(missed)+1 <= cap(c.send)-len(c.send) {
+			for _, b := range missed {
+				r.send(c, marshal(updatesMessage{"updates", b.base, b.clientID, b.steps}))
+			}
+			r.send(c, marshal(resumedMessage{"resumed", r.version}))
 			return
 		}
 	}
+	r.send(c, marshal(snapshotMessage{"snapshot", r.doc.String(), r.version, r.epoch}))
 }
 
 func (r *Room) handleUpdate(m updateMsg) {
@@ -321,18 +422,19 @@ func (r *Room) handleUpdate(m updateMsg) {
 	}
 	switch {
 	case m.version > r.version:
-		r.drop(m.c, "version ahead of server")
+		r.drop(m.c, websocket.StatusPolicyViolation, "version ahead of server")
 	case m.version < r.version:
 		r.send(m.c, marshal(rejectMessage{"reject", r.version}))
 	default:
 		doc, err := r.doc.ApplySteps(m.steps)
 		if err != nil {
-			r.drop(m.c, "invalid update")
+			r.drop(m.c, websocket.StatusPolicyViolation, "invalid update")
 			return
 		}
 		base := r.version
 		r.doc = doc
 		r.version += len(m.steps)
+		r.history.add(batch{base, m.clientID, m.steps})
 		data := marshal(updatesMessage{"updates", base, m.clientID, m.steps})
 		for c := range r.clients {
 			r.send(c, data)
@@ -345,6 +447,14 @@ func (r *Room) handleHello(m helloMsg) {
 	if _, ok := r.clients[m.c]; !ok {
 		return
 	}
+	// A client that reconnects keeps its clientID, and the server may not have
+	// noticed yet that its old connection is gone. Without this it would be
+	// listed twice.
+	for c := range r.clients {
+		if c != m.c && c.clientID == m.clientID {
+			r.drop(c, closeReplaced, "replaced by a newer connection")
+		}
+	}
 	m.c.clientID, m.c.userID, m.c.name = m.clientID, m.userID, m.name
 	r.viewersChanged = true
 }
@@ -355,9 +465,9 @@ func (r *Room) handleCursor(m cursorMsg) {
 	}
 	switch {
 	case m.c.clientID == "":
-		r.drop(m.c, "cursor before hello")
+		r.drop(m.c, websocket.StatusPolicyViolation, "cursor before hello")
 	case m.version > r.version:
-		r.drop(m.c, "version ahead of server")
+		r.drop(m.c, websocket.StatusPolicyViolation, "version ahead of server")
 	default:
 		data := marshal(cursorMessage{"cursor", m.c.clientID, m.version, m.pos})
 		for c := range r.clients {
@@ -398,13 +508,14 @@ func (r *Room) send(c *Client, data []byte) {
 	select {
 	case c.send <- data:
 	default:
-		r.drop(c, "too slow")
+		// Transient: the client may come back and catch up.
+		r.drop(c, websocket.StatusTryAgainLater, "too slow")
 	}
 }
 
-func (r *Room) drop(c *Client, reason string) {
+func (r *Room) drop(c *Client, code websocket.StatusCode, reason string) {
 	r.removeClient(c)
-	c.kick(reason)
+	c.kick(code, reason)
 }
 
 // removeClient takes c out of the room. If c was listed as a viewer, the
