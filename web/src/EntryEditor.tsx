@@ -43,8 +43,11 @@ export function EntryEditor({
   const preview = useDeferredValue(text)
 
   useEffect(() => {
-    const parent = host.current
-    if (!parent) return
+    const mount = host.current
+    if (!mount) return
+    // Inferred as non-null, which function declarations below can rely on;
+    // they would not see the narrowing of `mount` itself.
+    const parent = mount
 
     const clientID = crypto.randomUUID()
     const readOnly = new Compartment()
@@ -59,7 +62,10 @@ export function EntryEditor({
     setSelfID(clientID)
 
     let ws: WebSocket | undefined
-    const send = (message: ClientMessage) => ws?.send(JSON.stringify(message))
+
+    function send(message: ClientMessage) {
+      ws?.send(JSON.stringify(message))
+    }
 
     function freeze(next: Status) {
       setStatus(next)
@@ -72,7 +78,7 @@ export function EntryEditor({
       })
     }
 
-    const onMessage = (event: MessageEvent) => {
+    function onMessage(event: MessageEvent) {
       if (disposed) return
       const message = JSON.parse(String(event.data)) as ServerMessage
 

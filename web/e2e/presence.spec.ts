@@ -1,11 +1,13 @@
 import { expect, type Locator, type Page, test } from '@playwright/test'
 import { createEntry, openEntry } from './helpers.ts'
 
-const viewerList = (page: Page) =>
-  page.getByRole('list', { name: 'Viewers' }).getByRole('listitem')
+function viewerList(page: Page) {
+  return page.getByRole('list', { name: 'Viewers' }).getByRole('listitem')
+}
 
-const remoteCursor = (page: Page, name: string) =>
-  page.locator(`.remote-cursor[data-name="${name}"]`)
+function remoteCursor(page: Page, name: string) {
+  return page.locator(`.remote-cursor[data-name="${name}"]`)
+}
 
 /**
  * Where a cursor is drawn: UTF-16 units of text before it on its line. The
@@ -53,11 +55,13 @@ test('viewers see each other, and leave the list when they close the page', asyn
   await expect(viewerList(b)).toHaveText(['Ada', 'Grace (you)'])
 
   // A viewer's colour is derived from their id, so both pages show the same one.
-  const dotColor = (page: Page) =>
-    page
+  function dotColor(page: Page) {
+    return page
       .locator('.viewers li', { hasText: 'Grace' })
       .locator('.viewer-dot')
       .evaluate((el) => getComputedStyle(el).backgroundColor)
+  }
+
   expect(await dotColor(a)).toBe(await dotColor(b))
 
   await b.context().close()

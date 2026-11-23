@@ -12,31 +12,11 @@ interface LoggedStep {
  * a cursor is reported against the version its owner had synced, which is
  * usually a little behind ours.
  */
-export class StepLog {
-  /** steps[i] takes version `first + i` to `first + i + 1`. */
-  private steps: LoggedStep[] = []
-  private first: number
-  private readonly limit: number
-
-  constructor(startVersion: number, limit = 1000) {
-    this.first = startVersion
-    this.limit = limit
-  }
-
+export interface StepLog {
   /** The newest version: the one after every pushed step. */
-  get version(): number {
-    return this.first + this.steps.length
-  }
-
+  readonly version: number
   /** Records the step that takes the newest version to the next one. */
-  push(changes: ChangeSet, author: string) {
-    this.steps.push({ changes, author })
-    if (this.steps.length > this.limit) {
-      this.steps.shift()
-      this.first++
-    }
-  }
-
+  push: (changes: ChangeSet, author: string) => void
   /**
    * Maps `pos`, a position in document `version` that belongs to `owner`, to
    * the newest version. Text inserted at the position by someone else lands
@@ -45,13 +25,46 @@ export class StepLog {
    * Returns undefined if `version` is older than the log reaches or newer
    * than the newest version.
    */
-  mapToNewest(version: number, pos: number, owner: string): number | undefined {
-    if (version < this.first || version > this.version) return undefined
+  mapToNewest: (
+    version: number,
+    pos: number,
+    owner: string,
+  ) => number | undefined
+}
+
+/** `limit` bounds how many steps are remembered; older ones are forgotten. */
+export function createStepLog(startVersion: number, limit = 1000): StepLog {
+  // steps[i] takes version `first + i` to `first + i + 1`.
+  const steps: LoggedStep[] = []
+  let first = startVersion
+
+  function newest() {
+    return first + steps.length
+  }
+
+  function push(changes: ChangeSet, author: string) {
+    steps.push({ changes, author })
+    if (steps.length > limit) {
+      steps.shift()
+      first++
+    }
+  }
+
+  function mapToNewest(version: number, pos: number, owner: string) {
+    if (version < first || version > newest()) return undefined
     let mapped = pos
-    for (let i = version - this.first; i < this.steps.length; i++) {
-      const step = this.steps[i]
+    for (let i = version - first; i < steps.length; i++) {
+      const step = steps[i]
       mapped = step.changes.mapPos(mapped, step.author === owner ? 1 : -1)
     }
     return mapped
+  }
+
+  return {
+    get version() {
+      return newest()
+    },
+    push,
+    mapToNewest,
   }
 }

@@ -16,7 +16,7 @@ import type {
   ServerMessage,
   WireChange,
 } from './protocol.ts'
-import { StepLog } from './stepLog.ts'
+import { createStepLog } from './stepLog.ts'
 
 /**
  * Marks the transaction that applies another client's updates with that
@@ -77,7 +77,7 @@ export function createCollab(opts: CollabOptions): CollabClient {
   // edits. Wire changes carry no length, so it is tracked here to build
   // ChangeSets for incoming steps.
   let syncedLength = opts.docLength
-  const history = new StepLog(opts.version)
+  const history = createStepLog(opts.version)
 
   function push(state: EditorState) {
     if (inFlight) return
