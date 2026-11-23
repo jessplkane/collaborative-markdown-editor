@@ -45,7 +45,7 @@ JSON text frames. Also documented in `server/room.go` and `web/src/protocol.ts`.
 | server → client | `{"type":"reject","version":N}` | The batch was stale. N is the current version. |
 | client → server | `{"type":"ping"}` | Liveness probe, answered with `{"type":"pong"}`. See Reconnect and resume. |
 
-A malformed message or an out-of-range update closes the connection with code 1007 or 1008. Other close codes: 4004 the entry does not exist, 4009 the same client opened a newer connection, 4010 the entry was deleted, 4013 the update would have made the document too large, 1013 the client was too slow and may try again, 1001 the server is shutting down.
+A malformed message or an out-of-range update closes the connection with code 1007 or 1008, and so does sending messages faster than the per-connection limit (a token bucket refilled at 100 messages a second, holding 200). Other close codes: 4004 the entry does not exist, 4009 the same client opened a newer connection, 4010 the entry was deleted, 4013 the update would have made the document too large, 1013 the client was too slow and may try again, 1001 the server is shutting down.
 
 ### Presence
 

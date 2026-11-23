@@ -80,7 +80,7 @@ export const CLOSE_TOO_LARGE = 4013
 /**
  * Close codes after which reconnecting cannot help: the entry is gone, the
  * server is no longer talking to this client, or it refused what the client
- * sent (1007 malformed message, 1008 policy violation, 1009 message too
+ * sent (1007 malformed message, 1008 policy violation or too many messages, 1009 message too
  * big, 4013 document too large), which would be refused again. Every other
  * close, including the server's "try again later" (1013) and "going away"
  * (1001) and an abnormal drop (1006), is worth retrying.

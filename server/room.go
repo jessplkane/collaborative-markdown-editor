@@ -69,7 +69,8 @@ import (
 // them except 1007, 1008, 1009 and the application codes below.
 //
 //	1001  the server is shutting down; come back
-//	1007, 1008  the client sent something malformed or invalid
+//	1007, 1008  the client sent something malformed or invalid, or more
+//	      messages than the rate limit allows (Hub.messageRate)
 //	1009  a message over the read limit
 //	1013  the client was too slow and was dropped; may try again
 //	4004  closeNotFound: the entry does not exist
@@ -217,6 +218,14 @@ type Hub struct {
 	// make a document larger than this is refused; see handleUpdate.
 	maxDocUnits int
 
+	// messageRate and messageBurst limit how many messages one connection may
+	// send: a token bucket refilled at messageRate per second, holding up to
+	// messageBurst. A connection that overdraws it is closed with 1008. Every
+	// cursor is fanned out to the whole room, so this is what stops one client
+	// from costing everyone else.
+	messageRate  float64
+	messageBurst int
+
 	mu      sync.Mutex
 	rooms   map[string]*Room
 	closing bool // set by Shutdown: no new rooms
@@ -233,6 +242,10 @@ func NewHub(store *Store) *Hub {
 		linger:       30 * time.Second,
 		historyLimit: 4 << 20,
 		maxDocUnits:  defaultMaxDocUnits,
+		// Well above honest use: a held key and cursor moves together stay
+		// under 50 a second, and being over the limit is terminal.
+		messageRate:  100,
+		messageBurst: 200,
 	}
 }
 

@@ -157,9 +157,14 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	limit := newLimiter(h.messageRate, h.messageBurst, time.Now())
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
+			break
+		}
+		if !limit.allow(time.Now()) {
+			conn.Close(websocket.StatusPolicyViolation, "too many messages")
 			break
 		}
 		var m clientMessage
