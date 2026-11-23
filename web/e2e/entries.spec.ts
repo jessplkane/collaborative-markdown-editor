@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { editorText } from './helpers.ts'
+import { createEntry, editorText } from './helpers.ts'
 
 test('an entry can be created, listed, reopened and deleted from the UI', async ({
   page,
@@ -43,4 +43,26 @@ test('an entry can be created, listed, reopened and deleted from the UI', async 
   // Its address now says so rather than opening an editor.
   await page.goto(entryUrl)
   await expect(page.getByRole('alert')).toHaveText('This entry does not exist.')
+})
+
+// Deleting is idempotent: the entry being gone is what the user asked for, so
+// finding it already gone (deleted from another tab, say) is not a failure.
+test('deleting an entry that is already gone is not an error', async ({
+  page,
+  request,
+}) => {
+  const id = await createEntry(request)
+  await page.goto('/')
+  const row = page.getByRole('listitem').filter({
+    has: page.locator(`a[href$="/entries/${id}"]`),
+  })
+  await expect(row).toBeVisible()
+
+  // Behind the page's back, as another tab would.
+  expect((await request.delete(`/api/entries/${id}`)).status()).toBe(204)
+
+  page.once('dialog', (dialog) => void dialog.accept())
+  await row.getByRole('button', { name: 'Delete' }).click()
+  await expect(row).toHaveCount(0)
+  await expect(page.getByRole('alert')).toHaveCount(0)
 })

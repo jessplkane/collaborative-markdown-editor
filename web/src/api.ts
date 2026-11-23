@@ -32,6 +32,11 @@ export async function createEntry(): Promise<Entry> {
   return (await request('/api/entries', { method: 'POST' })).json()
 }
 
+/** Resolves once the entry is gone, including when it already was. */
 export async function deleteEntry(id: string): Promise<void> {
-  await request(`/api/entries/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  try {
+    await request(`/api/entries/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  } catch (err) {
+    if (!(err instanceof NotFoundError)) throw err
+  }
 }

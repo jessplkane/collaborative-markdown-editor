@@ -130,7 +130,7 @@ The lifecycle tests cover deleting an entry in a room (every client closed with 
 
 The browser tests live in `web/e2e/` and need Chromium once (`npx playwright install chromium`). `npm run e2e` starts its own Go server (throwaway database, port 8181) and Vite (port 5273), so it can run while `make dev` is up.
 
-- `entries.spec.ts` walks the list UI: create an entry, type a heading, see it listed under its derived title, reopen it, decline and then accept the delete confirmation, and see the entry's address report that it no longer exists.
+- `entries.spec.ts` walks the list UI: create an entry, type a heading, see it listed under its derived title, reopen it, decline and then accept the delete confirmation, and see the entry's address report that it no longer exists. It also deletes an entry that another client already deleted and checks that is not reported as an error.
 - `convergence.spec.ts` opens two browser contexts on one entry, types into both at the same time, and checks that both editors, the preview and a third, fresh browser show the same text, with each writer's keystrokes complete and in order.
 - `presence.spec.ts` covers the name prompt, the viewer list (including leaving when a page closes), and remote cursors: where they are drawn, how they follow edits from either side, and that a late joiner sees existing cursors.
 - `lifecycle.spec.ts` deletes an entry (through the REST API) while two pages have it open and checks both land on the list with a notice, and that a paste past the size cap is refused, leaves the other viewer and the saved text untouched, and is not retried.
@@ -173,6 +173,7 @@ server/
   room.go        hub, rooms, wire protocol, shutdown
   history.go     bounded log of accepted batches, for resume
   ws.go          WebSocket handler, close codes, size limits
+  ratelimit.go   per-connection token bucket
   cors.go        CORS and allowed-origin matching
   *_test.go      unit and websocket integration tests
   Dockerfile, fly.toml
