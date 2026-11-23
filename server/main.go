@@ -59,7 +59,10 @@ func run() error {
 	mux := http.NewServeMux()
 	(&API{store: store, hub: hub}).Register(mux)
 	mux.HandleFunc("GET /ws/entries/{id}", hub.ServeWS)
-	srv := &http.Server{Handler: withCORS(mux, origins)}
+	// A slow or stalled client must not hold a connection open by never
+	// finishing its request headers. Only that: a websocket is long-lived
+	// once upgraded, so no read, write or idle timeout belongs here.
+	srv := &http.Server{Handler: withCORS(mux, origins), ReadHeaderTimeout: 10 * time.Second}
 
 	// Bind before logging so "listening" is only printed when it is true.
 	ln, err := net.Listen("tcp", addr)
