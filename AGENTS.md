@@ -2,11 +2,11 @@
 
 Collaborative markdown editor: Go server in `server/`, React + Vite + TypeScript app in `web/`.
 
-`README.md` holds the architecture, wire protocol, reconnect/resume design and the run and test commands. Read its "How it works" section before changing rooms, sync or reconnect, and its protocol sections before changing any message or close code.
+`README.md` is a short overview that links to `docs/`. `docs/architecture.md` holds the room and sync design, `docs/protocol.md` the wire protocol and the reconnect/resume design, and `docs/development.md` the run, configuration and test commands. Read the architecture doc before changing rooms, sync or reconnect, and the protocol doc before changing any message or close code.
 
 ## Changing the protocol
 
-Update together: the doc comment in `server/room.go`, `web/src/protocol.ts`, and the README tables. A new close code also goes in `ws.go` and, if reconnecting cannot help, in `isTerminalClose` (`protocol.ts`).
+Update together: the doc comment in `server/room.go`, `web/src/protocol.ts`, and the tables in `docs/protocol.md`. A new close code also goes in `ws.go` and, if reconnecting cannot help, in `isTerminalClose` (`protocol.ts`).
 
 ## Conventions
 
